@@ -4,9 +4,8 @@ __pycache__/
 .venv/
 *.egg-info/
 
-# Scraper cache and data outputs
+# Scraper cache
 .yok_cache/
-yok_scraping/data_*/
 
 # Environment
 .env
