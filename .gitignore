@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+
+# Scraper cache and data outputs
+.yok_cache/
+yok_scraping/data_*/
+
+# Environment
+.env
+
+# OS
+.DS_Store
