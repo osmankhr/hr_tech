@@ -40,22 +40,27 @@ def match_university(text: str) -> Optional[str]:
     return None
 
 
-def today_dir(base: str = ".") -> str:
-    """Return today's data_YYYYMMDD path (created if missing)."""
-    name = f"data_{datetime.date.today():%Y%m%d}"
-    path = os.path.join(base, name)
+def today_str() -> str:
+    """Return today's date as YYYYMMDD string."""
+    return datetime.date.today().strftime("%Y%m%d")
+
+
+def data_dir(base: str = ".") -> str:
+    """Return the flat data/ path (created if missing)."""
+    path = os.path.join(base, "data")
     os.makedirs(path, exist_ok=True)
     return path
 
 
 def last_run_date(base: str = ".") -> Optional[datetime.date]:
-    """Return the date of the most recent data_YYYYMMDD folder, or None."""
-    pattern = re.compile(r"^data_(\d{4})(\d{2})(\d{2})$")
+    """Return the date of the most recent data/theses_YYYYMMDD.csv file, or None."""
+    pattern = re.compile(r"^theses_(\d{4})(\d{2})(\d{2})\.csv$")
+    data_path = os.path.join(base, "data")
     dates: list[datetime.date] = []
     try:
-        for entry in os.scandir(base):
+        for entry in os.scandir(data_path):
             m = pattern.match(entry.name)
-            if m and entry.is_dir():
+            if m and entry.is_file():
                 try:
                     dates.append(datetime.date(int(m.group(1)), int(m.group(2)), int(m.group(3))))
                 except ValueError:

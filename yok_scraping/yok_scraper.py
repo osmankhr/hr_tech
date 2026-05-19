@@ -4,11 +4,11 @@ YÖK Tez Merkezi — Incremental ML/DL/DS Thesis Scraper (v2)
 Discovers DS/ML/DL theses from tez.yok.gov.tr and optionally enriches each
 with advisor, institute, department, abstract, and keywords.
 
-Incremental by default: auto-detects the last data_YYYYMMDD/ folder and only
-fetches theses from that year onward. Override with --from_date.
+Incremental by default: auto-detects the last theses_YYYYMMDD.csv file in
+data/ and only fetches theses from that year onward. Override with --from_date.
 
-Outputs are written to data_YYYYMMDD/ (today's folder). Detail pages are
-cached under .yok_cache/ and shared across runs.
+Outputs are written to data/ as theses_YYYYMMDD.csv and new_authors_YYYYMMDD.csv.
+Detail pages are cached under .yok_cache/ and shared across runs.
 
 Usage:
     # Default run: last 30 days, no enrichment
@@ -51,7 +51,7 @@ try:
 except ImportError as e:
     raise SystemExit("beautifulsoup4 is required. Install with: pip install beautifulsoup4") from e
 
-from utils import match_university, today_dir, last_run_date
+from utils import match_university, data_dir, today_str, last_run_date
 
 
 # ---------------------------------------------------------------------------
@@ -462,26 +462,25 @@ def load_theses(path: str) -> list[Thesis]:
 # Incremental diff — new authors across runs
 # ---------------------------------------------------------------------------
 
-def _prev_run_dirs(base: str = ".") -> list[str]:
-    """Return all data_YYYYMMDD/ dirs in `base` except today's."""
+def _prev_theses_files(data_path: str) -> list[str]:
+    """Return all data/theses_YYYYMMDD.csv paths except today's."""
     today = datetime.date.today().strftime("%Y%m%d")
-    pat = re.compile(r"^data_(\d{8})$")
-    dirs = []
+    pat = re.compile(r"^theses_(\d{8})\.csv$")
+    files = []
     try:
-        for entry in os.scandir(base):
+        for entry in os.scandir(data_path):
             m = pat.match(entry.name)
-            if m and entry.is_dir() and m.group(1) != today:
-                dirs.append(entry.path)
+            if m and entry.is_file() and m.group(1) != today:
+                files.append(entry.path)
     except FileNotFoundError:
         pass
-    return dirs
+    return files
 
 
-def _seen_author_keys(prev_dirs: list[str]) -> set[tuple[str, str]]:
-    """Return set of (author_lower, university) seen in past yok_theses.csv files."""
+def _seen_author_keys(prev_files: list[str]) -> set[tuple[str, str]]:
+    """Return set of (author_lower, university) seen in past theses CSV files."""
     seen: set[tuple[str, str]] = set()
-    for d in prev_dirs:
-        path = os.path.join(d, "yok_theses.csv")
+    for path in prev_files:
         if not os.path.exists(path):
             continue
         with open(path, newline="", encoding="utf-8") as f:
@@ -493,12 +492,12 @@ def _seen_author_keys(prev_dirs: list[str]) -> set[tuple[str, str]]:
     return seen
 
 
-def save_new_authors(theses: list[Thesis], prev_dirs: list[str], path: str) -> None:
+def save_new_authors(theses: list[Thesis], prev_files: list[str], path: str) -> None:
     """
     Diff current theses against all past runs. Output one row per unique
     (author, university) pair that is new, sorted by university then author.
     """
-    seen = _seen_author_keys(prev_dirs)
+    seen = _seen_author_keys(prev_files)
 
     # Group theses by (author, university), keeping only new pairs
     groups: dict[tuple[str, str], dict] = {}
@@ -548,7 +547,7 @@ def save_new_authors(theses: list[Thesis], prev_dirs: list[str], path: str) -> N
 
 def run(year_start: int, year_end: int, out_dir: str, enrich: bool,
         resume: bool, keywords: list[str], thesis_types: list[str]) -> None:
-    theses_path = os.path.join(out_dir, "yok_theses.csv")
+    theses_path = os.path.join(out_dir, f"theses_{today_str()}.csv")
 
     existing: list[Thesis] = []
     seen: set[str] = set()
@@ -641,13 +640,14 @@ def run(year_start: int, year_end: int, out_dir: str, enrich: bool,
     combined = dedup_by_tez_no(existing + all_new)
     save_theses(combined, theses_path)
 
-    prev_dirs = _prev_run_dirs(os.path.dirname(os.path.abspath(out_dir)))
-    if prev_dirs:
-        print(f"\nDiffing against {len(prev_dirs)} previous run(s): "
-              f"{[os.path.basename(d) for d in sorted(prev_dirs)]}")
+    prev_files = _prev_theses_files(out_dir)
+    if prev_files:
+        print(f"\nDiffing against {len(prev_files)} previous run(s): "
+              f"{[os.path.basename(p) for p in sorted(prev_files)]}")
     else:
-        print("\nNo previous runs found — yok_new_authors.csv will contain all authors.")
-    save_new_authors(combined, prev_dirs, os.path.join(out_dir, "yok_new_authors.csv"))
+        print("\nNo previous runs found — new_authors CSV will contain all authors.")
+    new_authors_path = os.path.join(out_dir, f"new_authors_{today_str()}.csv")
+    save_new_authors(combined, prev_files, new_authors_path)
 
     print(f"\nResults:")
     print(f"   new theses : {len(all_new)}")
@@ -679,7 +679,7 @@ if __name__ == "__main__":
         raise SystemExit(f"Invalid --from_date: {args.from_date!r}. Use YYYY-MM-DD.")
     print(f"from_date={args.from_date}  ->  year_start={year_start}")
 
-    out_dir = today_dir(".")
+    out_dir = data_dir(".")
     print(f"Output directory: {out_dir}")
 
     kws = [k.strip() for k in args.keywords.split(",") if k.strip()] or ML_KEYWORDS

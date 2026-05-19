@@ -1,7 +1,7 @@
 """
 Email notification helper for the YÖK scraper.
 
-Reads yok_new_authors.csv from the latest data_YYYYMMDD/ folder and sends
+Reads the latest new_authors_YYYYMMDD.csv from the flat data/ folder and sends
 a summary email via Gmail SMTP.
 
 Required env vars:
@@ -38,27 +38,30 @@ NOTIFY_TO = [a.strip() for a in os.environ.get("NOTIFY_TO", "").split(",") if a.
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _latest_data_dir(base: str = ".") -> str | None:
-    pat = re.compile(r"^data_(\d{8})$")
+def _latest_new_authors_file(base: str = ".") -> str | None:
+    pat = re.compile(r"^new_authors_(\d{8})\.csv$")
+    data_path = os.path.join(base, "data")
     candidates = []
-    for entry in os.scandir(base):
-        m = pat.match(entry.name)
-        if m and entry.is_dir():
-            candidates.append((m.group(1), entry.path))
+    try:
+        for entry in os.scandir(data_path):
+            m = pat.match(entry.name)
+            if m and entry.is_file():
+                candidates.append((m.group(1), entry.path))
+    except FileNotFoundError:
+        pass
     return max(candidates, key=lambda x: x[0])[1] if candidates else None
 
 
-def _load_new_authors(data_dir: str) -> list[dict]:
-    path = os.path.join(data_dir, "yok_new_authors.csv")
+def _load_new_authors(path: str) -> list[dict]:
     if not os.path.exists(path):
         return []
     with open(path, newline="", encoding="utf-8") as f:
         return list(csv.DictReader(f))
 
 
-def _build_email(rows: list[dict], data_dir: str) -> tuple[str, str]:
+def _build_email(rows: list[dict], path: str) -> tuple[str, str]:
     """Return (subject, html_body)."""
-    run_date = os.path.basename(data_dir).replace("data_", "")
+    run_date = os.path.basename(path).replace("new_authors_", "").replace(".csv", "")
     n = len(rows)
 
     if n == 0:
@@ -102,21 +105,21 @@ def _build_email(rows: list[dict], data_dir: str) -> tuple[str, str]:
         f"<div style='font-family:sans-serif;max-width:900px'>"
         f"<h2>YÖK Scraper — {n} new author{'s' if n != 1 else ''}</h2>"
         f"<p style='color:#555'>Run date: {run_date} &nbsp;|&nbsp; "
-        f"Source: {data_dir}/yok_new_authors.csv</p>"
+        f"Source: {path}</p>"
         + "".join(sections) +
         f"</div>"
     )
     return subject, body
 
 
-def send(rows: list[dict], data_dir: str) -> None:
+def send(rows: list[dict], path: str) -> None:
     if not GMAIL_USER or not GMAIL_APP_PASS or not NOTIFY_TO:
         missing = [v for v, k in [
             ("GMAIL_USER", GMAIL_USER), ("GMAIL_APP_PASS", GMAIL_APP_PASS), ("NOTIFY_TO", NOTIFY_TO)
         ] if not k]
         raise SystemExit(f"Missing env vars: {missing}")
 
-    subject, html_body = _build_email(rows, data_dir)
+    subject, html_body = _build_email(rows, path)
 
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
@@ -138,9 +141,9 @@ def send(rows: list[dict], data_dir: str) -> None:
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    data_dir = _latest_data_dir(".")
-    if not data_dir:
-        raise SystemExit("No data_YYYYMMDD/ folder found.")
-    rows = _load_new_authors(data_dir)
-    print(f"Loaded {len(rows)} new authors from {data_dir}")
-    send(rows, data_dir)
+    path = _latest_new_authors_file(".")
+    if not path:
+        raise SystemExit("No data/new_authors_YYYYMMDD.csv file found.")
+    rows = _load_new_authors(path)
+    print(f"Loaded {len(rows)} new authors from {path}")
+    send(rows, path)
