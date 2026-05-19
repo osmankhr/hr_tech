@@ -32,6 +32,7 @@ import csv
 import datetime
 import html as html_lib
 import http.cookiejar
+import json
 import os
 import re
 import ssl
@@ -182,37 +183,37 @@ def bootstrap_session(opener) -> None:
 
 def _baseline_form() -> dict[str, str]:
     return {
-        "TezNo": "",
-        "TezAd": "",
-        "AdSoyad": "",
-        "DanismanAdSoyad": "",
+        "keyword": "",
+        "keyword1": "",
+        "keyword2": "",
+        "ops_field": "and",
+        "ops_field1": "and",
+        "nevi": "7",        # search all fields
+        "tip": "2",         # contains
+        "source": "TR",     # Turkish institutions
         "Universite": "0",
-        "Enstitu": "0",
-        "ABD": "0",
-        "BilimDali": "0",
         "uniad": "",
+        "uni_yoksis_id": "",
+        "Enstitu": "0",
         "ensad": "",
+        "ABD": "0",
         "abdad": "",
-        "bilim": "",
+        "Konu": "",
         "Tur": "0",
         "Dil": "0",
         "izin": "0",
         "Durum": "3",
-        "EnstituGrubu": "",
         "yil1": "0",
         "yil2": "0",
-        "Dizin": "",
-        "Metin": "",
-        "Konu": "",
-        "islem": "2",
         "Bolum": "0",
+        "islem": "4",
     }
 
 
 def search_slice(opener, *, metin: str = "", yil1: str = "0", yil2: str = "0",
                  tur: str = "0") -> str:
     form = _baseline_form()
-    form["Metin"] = metin
+    form["keyword"] = metin
     form["yil1"] = yil1
     form["yil2"] = yil2
     form["Tur"] = tur
@@ -235,9 +236,13 @@ def get_detail(opener, thesis_key: str, encrypted_no: str) -> str:
 # ---------------------------------------------------------------------------
 
 _COUNT_RE = re.compile(r"(\d+)\s*kayıt bulundu")
-_BLOCK_RE = re.compile(r"var doc\s*=\s*\{(.+?)\};", re.S)
-_USERID_RE = re.compile(r"onclick=tezDetay\('([^']+)','([^']+)'\)>(\d+)</span>")
-_FIELD_RE = re.compile(r'(\w+)\s*:\s*"((?:\\"|[^"])*)"', re.S)
+_CARD_RE = re.compile(
+    r'<div\s+class="result-card"\s+data-index="(\d+)"\s+data-kayitno="([^"]+)"\s+data-tezno="([^"]+)"',
+    re.S,
+)
+_TITLE_RE = re.compile(r'class="card-title">\s*(.+?)\s*</div>', re.S)
+_TITLE_TR_RE = re.compile(r'class="card-info"[^>]*>\s*(.+?)\s*</div>', re.S)
+_REF_DATA_RE = re.compile(r'const referenceData\s*=\s*(\{.+?\});\s*\n', re.S)
 
 
 def extract_total(html: str) -> Optional[int]:
@@ -245,52 +250,52 @@ def extract_total(html: str) -> Optional[int]:
     return int(m.group(1)) if m else None
 
 
-def _parse_title(raw: str) -> tuple[str, str, str]:
-    raw = html_lib.unescape(raw)
-    m = re.search(r"(.*?)<br>\s*<span[^>]*>(.*?)</span>", raw, re.S | re.I)
-    if m:
-        en = re.sub(r"<[^>]+>", " ", m.group(1))
-        tr = re.sub(r"<[^>]+>", " ", m.group(2))
-    else:
-        en = re.sub(r"<[^>]+>", " ", raw)
-        tr = ""
-    en = re.sub(r"\s+", " ", en).strip()
-    tr = re.sub(r"\s+", " ", tr).strip()
-    combined = en if not tr else f"{en} / {tr}"
-    return combined, en, tr
+def _parse_ref_data(html: str) -> dict:
+    m = _REF_DATA_RE.search(html)
+    if not m:
+        return {}
+    raw = re.sub(r',(\s*[}\]])', r'\1', m.group(1))  # strip JS trailing commas
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+
+
+def _clean(text: str) -> str:
+    return re.sub(r"\s+", " ", html_lib.unescape(text)).strip()
 
 
 def parse_search_html(html: str) -> list[Thesis]:
+    ref_data = _parse_ref_data(html)
+    titles_en = [_clean(m.group(1)) for m in _TITLE_RE.finditer(html)]
+    titles_tr = [_clean(m.group(1)) for m in _TITLE_TR_RE.finditer(html)]
+    cards = _CARD_RE.findall(html)
+
     out: list[Thesis] = []
-    for block_match in _BLOCK_RE.finditer(html):
-        block = block_match.group(1)
-        fields_map: dict[str, str] = {}
-        for f in _FIELD_RE.finditer(block):
-            fields_map[f.group(1)] = f.group(2).replace('\\"', '"')
+    for i, (idx_str, kayitno, tezno) in enumerate(cards):
+        idx = int(idx_str)
+        meta = ref_data.get(str(idx), {}).get("meta", {})
 
-        user_id_raw = fields_map.get("userId", "")
-        m = _USERID_RE.search(user_id_raw)
-        if not m:
-            continue
-        thesis_key, encrypted_no, tez_no = m.group(1), m.group(2), m.group(3)
+        title_en = titles_en[i] if i < len(titles_en) else ""
+        title_tr = titles_tr[i] if i < len(titles_tr) else ""
+        title = f"{title_en} / {title_tr}" if title_tr else title_en
 
-        title, title_en, title_tr = _parse_title(fields_map.get("weight", ""))
-        uni_raw = html_lib.unescape(fields_map.get("uni", "")).strip()
+        uni_raw = _clean(meta.get("yer", ""))
 
         out.append(Thesis(
-            tez_no=tez_no,
-            thesis_key=thesis_key,
-            encrypted_no=encrypted_no,
-            author=html_lib.unescape(fields_map.get("name", "")).strip(),
-            year=fields_map.get("age", "").strip(),
+            tez_no=kayitno,
+            thesis_key=kayitno,
+            encrypted_no=tezno,
+            author=_clean(meta.get("author", "")),
+            year=meta.get("year", "").strip(),
             title=title,
             title_en=title_en,
             title_tr=title_tr,
             university=match_university(uni_raw) or "",
             university_raw=uni_raw,
-            language=html_lib.unescape(fields_map.get("height", "")).strip(),
-            thesis_type=html_lib.unescape(fields_map.get("important", "")).strip(),
-            subject=html_lib.unescape(fields_map.get("someDate", "")).strip(),
+            language=_clean(meta.get("lang", "")),
+            thesis_type=_clean(meta.get("type", "")),
+            subject=_clean(meta.get("subject", "")),
         ))
     return out
 
