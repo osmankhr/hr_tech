@@ -1,0 +1,35 @@
+name: "Example Campaign — Senior ML Engineer (NLP)"
+description: >
+  Example campaign for finding senior ML engineers with NLP expertise,
+  targeting Turkey-based candidates and Turkish professionals abroad.
+
+locations:
+  - name: turkey
+    hint: "Focus on Turkey-based professionals (Istanbul, Ankara, Izmir)"
+  - name: us
+    hint: "Focus on Turkish diaspora — professionals with Turkish names or Turkish university degrees"
+
+search:
+  num_queries_per_location: 6   # Claude generates this many queries per location
+  num_results_per_query: 30
+  category: people
+  contents:
+    text: true
+    highlights:
+      num_sentences: 10
+      highlights_per_url: 3
+
+query_generation:
+  model: claude-sonnet-4-5
+
+filter:
+  max_candidates: 100
+  model: claude-sonnet-4-5
+
+# Uncomment to deduplicate against an existing pool:
+# dedup:
+#   existing_pool_path: "input/existing_pool.json"
+
+output:
+  formats: [excel, csv, json]
+  keep_rejected: true

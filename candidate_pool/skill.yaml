@@ -1,0 +1,25 @@
+name: candidate-pool
+description: >
+  Run a candidate pool search-and-filter campaign using Exa.ai for search
+  and Claude (headless) for AI-driven filtering.
+version: "1.0"
+entrypoint: "python scripts/run_campaign.py"
+inputs:
+  - name: campaign_dir
+    description: Path to the campaign directory (must contain campaign.yaml)
+    required: true
+phases:
+  - id: search
+    script: scripts/search.py
+    description: Search Exa.ai with parameterized queries per location
+  - id: filter
+    script: scripts/filter.py
+    description: AI-filter candidates using Claude headless mode
+  - id: report
+    script: scripts/report.py
+    description: Generate Excel/CSV/JSON shortlist with all candidate details
+dependencies:
+  env:
+    - EXA_API_KEY
+  cli:
+    - claude  # Claude Code CLI for headless filtering

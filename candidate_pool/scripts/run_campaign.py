@@ -1,0 +1,107 @@
+#!/usr/bin/env python3
+"""Campaign orchestrator.
+
+Usage:
+    python scripts/run_campaign.py <campaign_dir>
+    python scripts/run_campaign.py <campaign_dir> --search-only
+    python scripts/run_campaign.py <campaign_dir> --filter-only
+    python scripts/run_campaign.py <campaign_dir> --report-only
+"""
+from __future__ import annotations
+
+import argparse
+import logging
+import sys
+from datetime import datetime
+from pathlib import Path
+
+import yaml
+from dotenv import load_dotenv
+
+# Allow sibling-module imports when run as a script
+sys.path.insert(0, str(Path(__file__).parent))
+
+load_dotenv()
+
+
+def _setup_logging(log_dir: Path) -> None:
+    log_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
+        handlers=[
+            logging.StreamHandler(sys.stdout),
+            logging.FileHandler(log_dir / f"run_{stamp}.log"),
+        ],
+    )
+
+
+def _load_config(campaign_dir: Path) -> dict:
+    config_path = campaign_dir / "campaign.yaml"
+    if not config_path.exists():
+        raise FileNotFoundError(f"campaign.yaml not found in {campaign_dir}")
+    with open(config_path) as f:
+        return yaml.safe_load(f)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Run a candidate pool campaign")
+    parser.add_argument("campaign_dir", type=Path, help="Path to the campaign directory")
+    parser.add_argument("--queries-only", action="store_true", help="Run query generation phase only")
+    parser.add_argument("--search-only", action="store_true", help="Run search phase only (includes query generation if needed)")
+    parser.add_argument("--filter-only", action="store_true", help="Run filter phase only")
+    parser.add_argument("--report-only", action="store_true", help="Run report phase only")
+    parser.add_argument("--force-queries", action="store_true", help="Regenerate queries even if cached")
+    args = parser.parse_args()
+
+    campaign_dir = args.campaign_dir.resolve()
+    if not campaign_dir.is_dir():
+        print(f"Error: {campaign_dir} is not a directory", file=sys.stderr)
+        sys.exit(1)
+
+    config = _load_config(campaign_dir)
+    _setup_logging(campaign_dir / "logs")
+    logger = logging.getLogger(__name__)
+    logger.info("Campaign: %s", config.get("name", campaign_dir.name))
+
+    run_all = not any([args.search_only, args.filter_only, args.report_only, args.queries_only])
+
+    if run_all or args.search_only or args.queries_only:
+        from generate_queries import QueryGenerator
+
+        logger.info("=== QUERY GENERATION PHASE ===")
+        queries = QueryGenerator(campaign_dir, config).run(force=args.force_queries)
+        total_q = sum(len(v) for v in queries.values())
+        logger.info("Query generation complete: %d queries across %d locations", total_q, len(queries))
+
+    if run_all or args.search_only:
+        from search import ExaSearcher
+
+        logger.info("=== SEARCH PHASE ===")
+        results = ExaSearcher(campaign_dir, config).run()
+        total = sum(len(v) for v in results.values())
+        logger.info("Search complete: %d candidates across %d locations", total, len(results))
+
+    if run_all or args.filter_only:
+        from filter import CandidateFilter
+
+        logger.info("=== FILTER PHASE ===")
+        filtered = CandidateFilter(campaign_dir, config).run()
+        accepted = sum(
+            1 for c in filtered if c.get("ai_review", {}).get("recommendation") == "ACCEPT"
+        )
+        logger.info("Filter complete: %d/%d accepted", accepted, len(filtered))
+
+    if run_all or args.report_only:
+        from report import ReportGenerator
+
+        logger.info("=== REPORT PHASE ===")
+        shortlist_path = ReportGenerator(campaign_dir, config).run()
+        logger.info("Report complete: %s", shortlist_path)
+
+    logger.info("Campaign finished.")
+
+
+if __name__ == "__main__":
+    main()
