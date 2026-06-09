@@ -3,7 +3,7 @@ Run a candidate pool search-and-filter campaign.
 ## What this skill does
 
 1. **Lists** available campaigns if no argument is given
-2. **Runs** the full pipeline (search → filter → report) for a given campaign
+2. **Runs** the full pipeline (generate queries → search → filter → report) for a given campaign
 3. **Reports** results: candidate counts, output file locations
 
 ## Usage
@@ -25,13 +25,13 @@ When invoked:
 1. Parse the argument (if any) after `/candidate-pool`.
 
 2. If no argument or the argument is "list":
-   - Run: `ls candidate_pool/campaigns/`
+   - Run: `ls campaigns/`
    - Display the available campaign directories.
 
 3. If a campaign path is given:
    a. Verify the path exists and contains `campaign.yaml`.
-   b. Check that `EXA_API_KEY` is set (`cat candidate_pool/.env` or check environment).
-   c. Change to the `candidate_pool/` directory and run:
+   b. Check that `EXA_API_KEY` is set (`cat .env` or check environment).
+   c. Run from this directory:
       ```
       python scripts/run_campaign.py <campaign_path> [flags]
       ```
@@ -44,13 +44,13 @@ When invoked:
 4. If the user asks to **create a new campaign**:
    a. Ask for: campaign name, target locations (with optional hints), and filtering criteria.
       No search queries needed — Claude generates them automatically.
-   b. Create the campaign folder: `candidate_pool/campaigns/<name>_<YYYY-MM-DD>/`
-   c. Copy the structure from `candidate_pool/campaigns/example_2026-06-09/`
+   b. Create the campaign folder: `campaigns/<name>_<YYYY-MM-DD>/`
+   c. Copy the structure from `campaigns/example_2026-06-09/`
    d. Fill in `campaign.yaml` (locations + hints), `input/job_description.md`, `input/filter_criteria.md`
    e. Ask if the user wants to add seed CVs to `input/seed_cvs/` (PDFs of ideal candidates)
 
 ## Prerequisites
 
-- `EXA_API_KEY` set in `candidate_pool/.env`
-- `claude` CLI on PATH (for headless filtering)
-- Dependencies installed: `cd candidate_pool && uv sync`
+- `EXA_API_KEY` set in `.env`
+- `claude` CLI on PATH (for headless query generation and filtering)
+- Dependencies installed: `uv sync`
