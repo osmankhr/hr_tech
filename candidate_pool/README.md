@@ -80,6 +80,7 @@ locations:
   - name: us
     hint: "Focus on Turkish diaspora abroad"      # optional
 search:
+  provider: exa                # exa | peopledatalabs | apollo (defaults to exa if omitted)
   num_queries_per_location: 6   # Claude generates this many queries per location
   num_results_per_query: 30
   category: people
@@ -121,5 +122,10 @@ The `shortlist.json` output preserves **all Exa fields** plus the AI review, so 
 
 ## Dependencies
 
-- `EXA_API_KEY` — [exa.ai](https://exa.ai) API key
+- `EXA_API_KEY` — [exa.ai](https://exa.ai) API key (required unless `search.provider` is set to
+  `peopledatalabs` or `apollo`)
+- `DATALABS_API_KEY` — [peopledatalabs.com](https://www.peopledatalabs.com) API key, only needed
+  when `search.provider: peopledatalabs`
+- `APOLLO_API_KEY` — [apollo.io](https://apollo.io) API key, only needed when
+  `search.provider: apollo`
 - `claude` CLI — Claude Code must be installed and authenticated

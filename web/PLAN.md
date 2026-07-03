@@ -14,7 +14,7 @@ Comparison against the original plan is preserved at the bottom of this file for
 
 Each phase is meant to be a self-contained unit of work completable in one session. Check off
 a phase's exit criteria before starting the next one. Status as of 2026-07-03: **Phase 0 done,
-Phase 1 done, 2026-07-03.**
+Phase 2 done, 2026-07-03.**
 
 ---
 
@@ -81,15 +81,24 @@ this file is touched again.
 
 ---
 
-## Phase 2 — candidate_pool merge (search.py)
+## Phase 2 — candidate_pool merge (search.py) (done, 2026-07-03)
 
-- [ ] Merge multi-provider `search.py` (Exa / PeopleDataLabs / Apollo) from `hr_agent_ui` into
-      `hr_tech/candidate_pool/scripts/search.py`
-- [ ] Leave `filter.py` / `generate_queries.py` untouched (still Claude subprocess)
-- [ ] Add `DATALABS_API_KEY` / `APOLLO_API_KEY` as optional env vars (only required if that
-      provider is selected in campaign config)
-- [ ] Run one existing campaign config through search-only to confirm no regression on the
-      default (`exa`) path
+- [x] Merged multi-provider `search.py` (Exa / PeopleDataLabs / Apollo) from `hr_agent_ui` into
+      `hr_tech/candidate_pool/scripts/search.py` — verified it's a clean, purely additive diff
+      over our copy (same base, no divergent unrelated changes), and confirmed `run()`'s return
+      type (`dict[str, list[dict]]`) is unchanged so `run_campaign.py` needs no changes
+- [x] Left `filter.py` / `generate_queries.py` untouched (still Claude subprocess)
+- [x] Documented `search.provider: exa | peopledatalabs | apollo` in `candidate_pool/README.md`
+      (defaults to `exa` if omitted) and added `DATALABS_API_KEY` / `APOLLO_API_KEY` as commented
+      optional entries in `.env.example` — only required if that provider is selected
+- [x] Regression-checked the default path in a throwaway venv against the existing example
+      campaign (no `search.provider` set): confirms provider resolves to `exa`, the `Exa` client
+      is still constructed the same way, and query dispatch still falls through to
+      `location.queries or generated_queries.yaml` unchanged (hit the same pre-existing
+      "no generated queries yet" error the file always raised in that state — not a regression)
+
+**Exit criteria met:** `search.py` supports 3 providers, default behavior unchanged, no
+CopilotClient dependency introduced.
 
 **Exit criteria:** `search.py` supports 3 providers, default behavior unchanged, no CopilotClient
 dependency introduced.
