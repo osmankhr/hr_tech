@@ -10,5 +10,13 @@ __pycache__/
 # Environment
 .env
 
+# web backend runtime data
+web/backend/*.db
+web/backend/uploaded_cvs/
+
+# web frontend
+web/frontend/node_modules/
+web/frontend/dist/
+
 # OS
 .DS_Store

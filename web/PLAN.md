@@ -14,7 +14,7 @@ Comparison against the original plan is preserved at the bottom of this file for
 
 Each phase is meant to be a self-contained unit of work completable in one session. Check off
 a phase's exit criteria before starting the next one. Status as of 2026-07-03: **Phase 0 done,
-starting Phase 1.**
+Phase 1 done, 2026-07-03.**
 
 ---
 
@@ -43,23 +43,41 @@ starting Phase 1.**
 
 ---
 
-## Phase 1 — Backend port + auth hardening
+## Phase 1 — Backend port + auth hardening (done, 2026-07-03)
 
-- [ ] Copy `hr_agent_ui/backend/main.py` and `auth_utils.py` into `hr_tech/web/backend/`
-- [ ] Remove the public `POST /api/auth/signup` route entirely (or move it behind
-      `require_admin` as an admin-only "create user" action) — no self-registration, matching
-      the original requirement
-- [ ] Verify the bootstrap admin path (`migrate_auth_audit.py`, seeds `admin@hr.local`) still
-      works standalone so there's always a way in
-- [ ] Point `CANDIDATE_POOL_ROOT` at `hr_tech/candidate_pool` instead of a sibling path
-- [ ] Tighten CORS `allow_origins` from `localhost:5173` to the real prod origin (plus
-      localhost for dev)
-- [ ] Confirm DB path (`hr_candidate_search_demo.db`) is gitignored and configurable
-- [ ] Smoke test locally: `uvicorn main:app --reload`, sign in as admin, confirm signup route
-      is gone (404/403), hit a few read endpoints
+- [x] Copied `hr_agent_ui/backend/main.py`, `auth_utils.py`, `migrate_auth_audit.py`,
+      `create_sample_hr_db.py` into `hr_tech/web/backend/`
+- [x] Removed the public `POST /api/auth/signup` route; replaced with
+      `POST /api/users` gated behind `require_admin` (accepts `role` param, defaults to `hr`).
+      No self-registration — matches the original requirement.
+- [x] Fixed the hardcoded default admin password in `migrate_auth_audit.py`
+      (`Admin123!ChangeMe`, committed in colleague's repo) — now reads
+      `HR_ADMIN_EMAIL` / `HR_ADMIN_PASSWORD` from env, generates a random password and prints it
+      once if unset. Never a known fixed password in source.
+- [x] Verified bootstrap flow: `create_sample_hr_db.py` (schema) →
+      `migrate_auth_audit.py` (seeds admin) works standalone.
+- [x] `CANDIDATE_POOL_ROOT` now resolves to `hr_tech/candidate_pool` (was a sibling-of-backend
+      path in the original code; adjusted for our one-level-deeper `web/backend/` layout).
+- [x] `DB_PATH` / `UPLOAD_DIR` made absolute (anchored to the script's own directory) instead of
+      CWD-relative, so behavior doesn't depend on where the process is launched from (matters
+      once this runs under systemd).
+- [x] CORS origins now read from `HR_CORS_ORIGINS` env var (comma-separated), defaults to
+      `http://localhost:5173` for local dev; prod origin to be set when the systemd unit is
+      written in Phase 6.
+- [x] Added `web/backend/requirements.txt` (fastapi, uvicorn[standard], python-multipart)
+- [x] Added `.gitignore` entries for `web/backend/*.db`, `web/backend/uploaded_cvs/`,
+      `web/frontend/node_modules/`, `web/frontend/dist/`
+- [x] Smoke tested locally end-to-end (uvicorn on a scratch port): confirmed
+      `/api/auth/signup` is gone (404), admin sign-in works, admin can create a new `hr` user via
+      `POST /api/users`, that user can sign in, and both an unauthenticated request and a
+      non-admin token get rejected (401/403) when hitting `POST /api/users`.
 
-**Exit criteria:** backend runs locally, only admin-created accounts can log in, no path
-touches production infra yet.
+**Exit criteria met:** backend runs locally, only admin-created accounts can log in, no path
+touched production infra.
+
+**Follow-up noted, not blocking:** `migrate_auth_audit.py` uses `datetime.utcnow()`, which is
+deprecated in newer Python — harmless today, worth a quick swap to `datetime.now(UTC)` whenever
+this file is touched again.
 
 ---
 
