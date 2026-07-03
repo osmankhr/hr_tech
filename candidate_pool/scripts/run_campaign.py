@@ -5,6 +5,7 @@ Usage:
     python scripts/run_campaign.py <campaign_dir>
     python scripts/run_campaign.py <campaign_dir> --search-only
     python scripts/run_campaign.py <campaign_dir> --filter-only
+    python scripts/run_campaign.py <campaign_dir> --rank-only
     python scripts/run_campaign.py <campaign_dir> --report-only
 """
 from __future__ import annotations
@@ -51,8 +52,10 @@ def main() -> None:
     parser.add_argument("--queries-only", action="store_true", help="Run query generation phase only")
     parser.add_argument("--search-only", action="store_true", help="Run search phase only (includes query generation if needed)")
     parser.add_argument("--filter-only", action="store_true", help="Run filter phase only")
+    parser.add_argument("--rank-only", action="store_true", help="Run ranking phase only")
     parser.add_argument("--report-only", action="store_true", help="Run report phase only")
     parser.add_argument("--force-queries", action="store_true", help="Regenerate queries even if cached")
+    parser.add_argument("--force-ranking-redesign", action="store_true", help="Regenerate ranking feature schema and scoring policy")
     args = parser.parse_args()
 
     campaign_dir = args.campaign_dir.resolve()
@@ -65,7 +68,7 @@ def main() -> None:
     logger = logging.getLogger(__name__)
     logger.info("Campaign: %s", config.get("name", campaign_dir.name))
 
-    run_all = not any([args.search_only, args.filter_only, args.report_only, args.queries_only])
+    run_all = not any([args.search_only, args.filter_only, args.rank_only, args.report_only, args.queries_only])
 
     if run_all or args.search_only or args.queries_only:
         from generate_queries import QueryGenerator
@@ -92,6 +95,17 @@ def main() -> None:
             1 for c in filtered if c.get("ai_review", {}).get("recommendation") == "ACCEPT"
         )
         logger.info("Filter complete: %d/%d accepted", accepted, len(filtered))
+
+    ranking_enabled = config.get("ranking", {}).get("enabled", True)
+    if args.force_ranking_redesign:
+        config.setdefault("ranking", {})["force_redesign"] = True
+
+    if (run_all and ranking_enabled) or args.rank_only:
+        from ranking.pipeline import RankingPipeline
+
+        logger.info("=== RANKING PHASE ===")
+        ranked = RankingPipeline(campaign_dir, config).run()
+        logger.info("Ranking complete: %d candidates ranked", len(ranked))
 
     if run_all or args.report_only:
         from report import ReportGenerator

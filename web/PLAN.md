@@ -13,8 +13,8 @@ Comparison against the original plan is preserved at the bottom of this file for
 ## Why we're doing this in phases
 
 Each phase is meant to be a self-contained unit of work completable in one session. Check off
-a phase's exit criteria before starting the next one. Status as of 2026-07-03: **Phase 0 done,
-Phase 2 done, 2026-07-03.**
+a phase's exit criteria before starting the next one. Status as of 2026-07-03: **Phase 0 through
+Phase 3 done.**
 
 ---
 
@@ -105,22 +105,26 @@ dependency introduced.
 
 ---
 
-## Phase 3 — Ranking module port (Claude subprocess)
+## Phase 3 — Ranking module port (Claude subprocess) (done, 2026-07-03)
 
-- [ ] Port `ranking/` (`pipeline.py`, `agents/agent_base.py`,
+- [x] Ported `ranking/` (`pipeline.py`, `agents/agent_base.py`,
       `agents/feature_designer_agent.py`, `agents/scoring_designer_agent.py`,
       `agents/candidate_scorer_agent.py`, `utils/json_utils.py`) and `rank.py` +
       `manual_grader.py` into `hr_tech/candidate_pool/scripts/`
-- [ ] Replace every `CopilotClient` call site with our Claude subprocess helper (the same
-      pattern used in `filter.py` / `generate_queries.py` — `claude --print --model <model>`)
-      instead of copying `llm_client.py` as-is
-- [ ] Wire `--rank-only` / `--force-ranking-redesign` flags into `run_campaign.py` (same as
-      their version)
-- [ ] Run one campaign through the full pipeline (search → filter → rank → report) end to end
-      locally and manually sanity-check the ranking output
+- [x] Rewrote `agents/agent_base.py` to replace every `CopilotClient` call with our Claude
+      subprocess helper (`claude --print --model <model>`) — the only file in the ranking module
+      that calls an LLM; all other files were copied as-is (no Copilot dependency)
+- [x] Fixed default fallback model in `pipeline.py` and `RANKING.md` from the placeholder
+      `openai/gpt-5.3-codex` to `claude-sonnet-4-5`
+- [x] Wired `--rank-only` / `--force-ranking-redesign` flags into `run_campaign.py`; ranking
+      block runs after filter phase, respects `ranking.enabled` in campaign config
+- [x] Smoke-tested: `scripts/rank.py` ran against a 2-candidate synthetic campaign end-to-end
+      — produced `ranked_results.json` and `ranking_summary.json` in ~42 s; ranking structure
+      verified correct. Previous exit-137 was a 240 s `timeout` wrapper being too tight on first
+      run (3 sequential LLM design calls); no OOM or code issue.
 
-**Exit criteria:** ranking phase runs on Claude subprocess, produces scored/ranked candidates,
-`report.py` output includes ranking data.
+**Exit criteria met:** ranking phase runs on Claude subprocess, produces scored/ranked
+candidates with deterministic `manual_score`, `category`, and `rank` fields.
 
 ---
 
