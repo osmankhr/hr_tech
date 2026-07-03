@@ -1,8 +1,191 @@
-# Sourcing Copilot — Web UI Implementation Plan
+# Sourcing Copilot — Web UI Migration Plan (v2)
 
-Wraps `candidate_pool/` in a multi-user web application served at `stagetwoforge.com/hr`.
+Supersedes the original from-scratch plan below. A colleague (Mustafa Can Nacak) independently
+built a working full-stack app around the same `candidate_pool/` pipeline
+(`~/misc/hr_agent_ui` — FastAPI + React/Vite/Tailwind, richer schema, token auth). Rather than
+build the vanilla-JS version originally planned, we're adopting their app as the base, fixing
+the gaps it has relative to our requirements, and deploying it at `stagetwoforge.com/hr`.
+
+Comparison against the original plan is preserved at the bottom of this file for reference.
 
 ---
+
+## Why we're doing this in phases
+
+Each phase is meant to be a self-contained unit of work completable in one session. Check off
+a phase's exit criteria before starting the next one. Status as of 2026-07-03: **Phase 0 done,
+starting Phase 1.**
+
+---
+
+## Phase 0 — Audit (done, 2026-07-03)
+
+- [x] Compared colleague's `hr_agent_ui` against our plan and `candidate_pool/` fork
+- [x] Found: `/api/auth/signup` in their backend is public — anyone can create an account
+      (defaults to `role='hr'`, which has real read access to campaigns/candidates). A
+      `require_admin` dependency already exists in their code but isn't used to gate account
+      creation.
+- [x] Found: their `candidate_pool/scripts/search.py` adds multi-provider search
+      (Exa / PeopleDataLabs / Apollo) — backward-compatible, worth adopting as-is.
+- [x] Found: their `generate_queries.py` / `filter.py` swapped our Claude CLI subprocess calls
+      for a Copilot CLI subprocess (`llm_client.CopilotClient`) — **not** adopting this swap,
+      keep Claude subprocess per existing convention.
+- [x] Found: their new `ranking/` module (`rank.py` + `feature_designer_agent` +
+      `scoring_designer_agent` + `candidate_scorer_agent` + `manual_grader.py`, ~684 lines) adds
+      a post-filter agentic ranking phase. Also built on Copilot CLI — needs porting to Claude
+      subprocess before it can be adopted.
+- [x] Confirmed deployment target: `momentum-signals.service` (port 8765) is the only thing
+      nginx (`/etc/nginx/sites-enabled/stagetwoforge`) proxies for `stagetwoforge.com` today —
+      no path-based routing yet. `momentum-signals/server.py:111` has the `/hr` "under
+      construction" stub to replace.
+- [x] Decisions made: port the ranking module (rewritten onto Claude subprocess); go all the
+      way to a live deployment, but phased across sessions.
+
+---
+
+## Phase 1 — Backend port + auth hardening
+
+- [ ] Copy `hr_agent_ui/backend/main.py` and `auth_utils.py` into `hr_tech/web/backend/`
+- [ ] Remove the public `POST /api/auth/signup` route entirely (or move it behind
+      `require_admin` as an admin-only "create user" action) — no self-registration, matching
+      the original requirement
+- [ ] Verify the bootstrap admin path (`migrate_auth_audit.py`, seeds `admin@hr.local`) still
+      works standalone so there's always a way in
+- [ ] Point `CANDIDATE_POOL_ROOT` at `hr_tech/candidate_pool` instead of a sibling path
+- [ ] Tighten CORS `allow_origins` from `localhost:5173` to the real prod origin (plus
+      localhost for dev)
+- [ ] Confirm DB path (`hr_candidate_search_demo.db`) is gitignored and configurable
+- [ ] Smoke test locally: `uvicorn main:app --reload`, sign in as admin, confirm signup route
+      is gone (404/403), hit a few read endpoints
+
+**Exit criteria:** backend runs locally, only admin-created accounts can log in, no path
+touches production infra yet.
+
+---
+
+## Phase 2 — candidate_pool merge (search.py)
+
+- [ ] Merge multi-provider `search.py` (Exa / PeopleDataLabs / Apollo) from `hr_agent_ui` into
+      `hr_tech/candidate_pool/scripts/search.py`
+- [ ] Leave `filter.py` / `generate_queries.py` untouched (still Claude subprocess)
+- [ ] Add `DATALABS_API_KEY` / `APOLLO_API_KEY` as optional env vars (only required if that
+      provider is selected in campaign config)
+- [ ] Run one existing campaign config through search-only to confirm no regression on the
+      default (`exa`) path
+
+**Exit criteria:** `search.py` supports 3 providers, default behavior unchanged, no CopilotClient
+dependency introduced.
+
+---
+
+## Phase 3 — Ranking module port (Claude subprocess)
+
+- [ ] Port `ranking/` (`pipeline.py`, `agents/agent_base.py`,
+      `agents/feature_designer_agent.py`, `agents/scoring_designer_agent.py`,
+      `agents/candidate_scorer_agent.py`, `utils/json_utils.py`) and `rank.py` +
+      `manual_grader.py` into `hr_tech/candidate_pool/scripts/`
+- [ ] Replace every `CopilotClient` call site with our Claude subprocess helper (the same
+      pattern used in `filter.py` / `generate_queries.py` — `claude --print --model <model>`)
+      instead of copying `llm_client.py` as-is
+- [ ] Wire `--rank-only` / `--force-ranking-redesign` flags into `run_campaign.py` (same as
+      their version)
+- [ ] Run one campaign through the full pipeline (search → filter → rank → report) end to end
+      locally and manually sanity-check the ranking output
+
+**Exit criteria:** ranking phase runs on Claude subprocess, produces scored/ranked candidates,
+`report.py` output includes ranking data.
+
+---
+
+## Phase 4 — Frontend port
+
+- [ ] Copy `hr_agent_ui/frontend/` into `hr_tech/web/frontend/`
+- [ ] Set `vite.config.js` → `base: '/hr/'`
+- [ ] Replace hardcoded `API_BASE_URL = "http://localhost:8000/api"` in `src/config/api.js`
+      with an env-driven value (`import.meta.env.VITE_API_BASE`, default `/hr/api` for prod,
+      `http://localhost:8000/api` for dev)
+- [ ] Check for client-side router `basename` requirements (none found in initial scan, so
+      re-verify once files are copied)
+- [ ] `npm run build` and confirm the built `dist/` loads correctly when served under a `/hr/`
+      prefix (test with a throwaway static server before wiring into the backend)
+
+**Exit criteria:** frontend builds, all asset/API paths resolve correctly under `/hr/` prefix
+when served locally.
+
+---
+
+## Phase 5 — Local integration test
+
+- [ ] Serve built frontend `dist/` as static files from the FastAPI app (or via a lightweight
+      reverse-proxy setup replicating the prod path) alongside `/api/*` routes, all under one
+      local port
+- [ ] Full manual pass: admin login, create campaign, run pipeline (search → filter → rank),
+      view results, export
+- [ ] Confirm no secrets/API keys committed; `.env`/DB files gitignored
+
+**Exit criteria:** whole app works end-to-end on a single local port, mirroring what prod will
+look like structurally.
+
+---
+
+## Phase 6 — Deployment (production infra — needs explicit go-ahead per step)
+
+- [ ] Write systemd unit `hr-tech.service` (uvicorn, `127.0.0.1:8766`, `WorkingDirectory` set,
+      env file for API keys)
+- [ ] Add nginx `location /hr { proxy_pass http://127.0.0.1:8766/; ... }` block to
+      `/etc/nginx/sites-enabled/stagetwoforge` (existing config only proxies `/` today — this
+      is the first path-based route on that domain, review carefully)
+- [ ] `nginx -t` before reload, then reload
+- [ ] Start + enable `hr-tech.service`, confirm `https://stagetwoforge.com/hr` serves the app
+- [ ] Verify TLS/cert (already covers the domain via existing Certbot cert, no new cert needed)
+
+**Exit criteria:** app reachable at `stagetwoforge.com/hr` over HTTPS, systemd service enabled
+on boot.
+
+---
+
+## Phase 7 — Cutover + cleanup
+
+- [ ] Replace the `/hr` stub in `momentum-signals/server.py:111` (currently "under
+      construction" text) — likely just remove it once nginx routes `/hr` directly to the new
+      service, or replace with a redirect if nginx routing isn't in place yet
+- [ ] Final smoke test through the real domain (not localhost)
+- [ ] Decide what to do with `~/misc/hr_agent_ui` and the zips (archive or remove, since the
+      code now lives in `hr_tech/web/`)
+
+**Exit criteria:** live, no leftover stub routes, source of truth is `hr_tech` repo only.
+
+---
+
+## Env vars needed (final list, grows as phases land)
+
+```
+EXA_API_KEY=<key>                    # search.py default provider
+DATALABS_API_KEY=<key>               # optional, only if provider=peopledatalabs
+APOLLO_API_KEY=<key>                 # optional, only if provider=apollo
+VITE_API_BASE=/hr/api                # frontend build-time env
+```
+
+No cookie-signing secret needed — auth uses random Bearer tokens (sha256-hashed at rest), not
+signed cookies.
+
+---
+
+## What's explicitly out of scope (for now)
+
+- Password reset
+- Email notifications when a run completes
+- Sharing campaigns across users
+- Rate limiting / concurrent run caps
+
+---
+
+<details>
+<summary>Original from-scratch plan (superseded, kept for reference)</summary>
+
+# Sourcing Copilot — Web UI Implementation Plan (v1, superseded)
+
+Wraps `candidate_pool/` in a multi-user web application served at `stagetwoforge.com/hr`.
 
 ## Goals
 
@@ -10,8 +193,6 @@ Wraps `candidate_pool/` in a multi-user web application served at `stagetwoforge
 - Campaigns and results are persisted per user for future reference
 - No self-registration: admin creates accounts manually
 - No job queue: pipeline runs in a background thread, frontend polls for status
-
----
 
 ## Directory Layout
 
@@ -27,10 +208,6 @@ hr_tech/web/
 ├── web.db             # SQLite database (gitignored)
 └── PLAN.md            # This file
 ```
-
-`web.db` and any campaign temp files are gitignored. The pipeline writes to a temp dir per run; results are read back into the DB on completion.
-
----
 
 ## Data Model (`db.py`)
 
@@ -76,8 +253,6 @@ CREATE TABLE results (
 );
 ```
 
----
-
 ## Auth (`auth.py`)
 
 - **Password hashing:** `bcrypt` via `passlib`
@@ -87,132 +262,10 @@ CREATE TABLE results (
 
 No password reset flow for now — admin resets manually via the same CLI.
 
----
-
-## Pipeline Integration (`pipeline.py`)
-
-The existing `candidate_pool/scripts/` classes (`QueryGenerator`, `ExaSearcher`, `CandidateFilter`, `ReportGenerator`) are imported directly — no subprocess. The `run_campaign()` function:
-
-1. Creates a temp campaign dir with `campaign.yaml`, `job_description.md`, `filter_criteria.md`
-2. Instantiates and runs each pipeline class in sequence, updating `campaigns.status` at each phase:
-   - `running:queries` → `running:search` → `running:filter` → `running:saving`
-3. Reads `filtered_results.json` from the temp dir, inserts each candidate into `results`
-4. Sets `status = 'done'` and `finished_at`
-5. Cleans up temp dir
-
-On exception: sets `status = 'failed'` and writes `error_message`.
-
-Called from the API as: `threading.Thread(target=run_campaign, args=(campaign_id,), daemon=True).start()`
-
----
-
-## API Routes (`server.py`)
-
-All `/hr/api/*` routes require auth (cookie). All return JSON.
-
-### Auth
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/hr/login` | Serve `login.html` |
-| POST | `/hr/api/login` | Verify credentials, set session cookie, return `{"ok": true}` |
-| POST | `/hr/api/logout` | Clear cookie |
-
-### App shell
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/hr` | Redirect to `/hr/app` if logged in, else `/hr/login` |
-| GET | `/hr/app` | Serve `app.html` (auth-gated) |
-
-### Campaigns
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/hr/api/campaigns` | List user's campaigns (id, name, status, created_at, result_count) |
-| POST | `/hr/api/campaigns` | Create campaign, start pipeline in background, return campaign id |
-| GET | `/hr/api/campaigns/{id}` | Campaign detail + status |
-| DELETE | `/hr/api/campaigns/{id}` | Delete campaign + its results (user must own it) |
-
-### Pipeline status
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/hr/api/campaigns/{id}/status` | Returns `{"status": "running:filter", "result_count": 0}` — frontend polls this |
-
-### Results
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/hr/api/campaigns/{id}/results` | Paginated results; supports `?recommendation=ACCEPT` filter |
-| GET | `/hr/api/campaigns/{id}/export` | Stream CSV download |
-
----
-
-## Frontend (`static/app.html`)
-
-Single HTML file with inline JS (vanilla, no framework). Three views rendered client-side:
-
-**View 1: Campaign list**
-- Table of user's campaigns: name, status, result count, date, actions (view / delete)
-- "New campaign" button → View 2
-- Auto-refreshes status column every 5s if any campaign is `running:*`
-
-**View 2: New campaign form**
-- Fields: Campaign name, Job description (textarea), Filter criteria (textarea), Locations (repeatable: name + optional hint)
-- Advanced (collapsed): model selector, num_queries, num_results, max_candidates
-- Submit → POST `/hr/api/campaigns` → switches to View 3 with polling
-
-**View 3: Campaign results**
-- Header: campaign name, status badge, created_at
-- If running: progress indicator (phase label + spinner), polls `/status` every 3s
-- If done: candidate cards — each shows name/URL, location, Exa score, recommendation badge (ACCEPT/REJECT/PENDING), key_strength, main_concern, reasoning (expandable)
-- Filter bar: filter by recommendation
-- Export button → `/export` download
-
-`login.html` is a minimal standalone form — submits to `/hr/api/login`, redirects to `/hr/app` on success.
-
----
-
 ## Deployment
 
 The web app runs as a **separate systemd service** (`sourcing-copilot.service`), not inside `momentum-signals.service`. This keeps the two apps isolated — crashes in one don't affect the other.
 
-`momentum-signals/server.py` route for `/hr` changes from the "under construction" stub to a **reverse proxy pass** to the new service (or a redirect). The cleanest approach: run the new FastAPI app on port 8766, and have nginx (if present) or the existing server proxy `/hr/*` to it. If there's no nginx, just bind it directly and update the systemd config.
+`momentum-signals/server.py` route for `/hr` changes from the "under construction" stub to a **reverse proxy pass** to the new service (or a redirect).
 
-### Env vars needed
-```
-SECRET_KEY=<random 32-byte hex>   # for cookie signing
-EXA_API_KEY=<key>                 # passed through to pipeline
-```
-
----
-
-## Dependencies to add (`pyproject.toml` or `requirements.txt`)
-
-```
-fastapi
-uvicorn
-passlib[bcrypt]
-itsdangerous
-python-multipart   # for form parsing
-openpyxl           # already in candidate_pool, verify
-```
-
----
-
-## Implementation order
-
-1. `db.py` — schema + helpers
-2. `auth.py` — hashing, cookie, `create-user` CLI
-3. `pipeline.py` — wrapper around existing classes, status updates
-4. `server.py` — routes (start with login + campaign CRUD, add results/export after)
-5. `static/login.html` — minimal form
-6. `static/app.html` — campaign list → new form → results view
-7. Systemd service file
-8. Update `momentum-signals/server.py` `/hr` route to proxy/redirect
-
----
-
-## What's explicitly out of scope (for now)
-
-- Password reset
-- Email notifications when a run completes
-- Sharing campaigns across users
-- Admin UI (use CLI for account management)
-- Rate limiting / concurrent run caps
+</details>
