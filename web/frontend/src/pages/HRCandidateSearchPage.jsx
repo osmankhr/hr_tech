@@ -552,6 +552,7 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
   const changeDashboardCampaign = (campaign) => {
     setDashboardCampaignId(String(campaign.id));
     setDashboardPage(1);
+    setSelectedCampaign(campaign);
   };
 
   const openDeleteCampaignModal = (campaign) => {
