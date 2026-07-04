@@ -245,14 +245,21 @@ enabled on boot.
 
 ---
 
-## Phase 7 — Cutover + cleanup
+## Phase 7 — Cutover + cleanup (in progress, 2026-07-04)
 
-- [ ] Replace the `/hr` stub in `momentum-signals/server.py:111` (currently "under
-      construction" text) — likely just remove it once nginx routes `/hr` directly to the new
-      service, or replace with a redirect if nginx routing isn't in place yet
-- [ ] Final smoke test through the real domain (not localhost)
-- [ ] Decide what to do with `~/misc/hr_agent_ui` and the zips (archive or remove, since the
-      code now lives in `hr_tech/web/`)
+- [x] Removed the `/hr` stub route from `momentum-signals/server.py` (was already
+      unreachable in production — nginx's `location /hr/` always wins over `location /`
+      regardless of declaration order, so this was dead code from the moment Phase 6 shipped).
+      Committed and pushed to the `momentum-signals` repo separately (isolated diff, didn't
+      touch its unrelated in-progress changes to `requirements.txt` / `deep_dives/` / `logs/`).
+- [x] Final smoke test through the real domain: main site (`/`, `/momentum`) still 200,
+      `/hr` redirects to `/hr/` (301), `/hr/` serves the app (200), unauthenticated
+      `/hr/api/auth/me` correctly 401s, and the full authenticated flow (signin → campaigns →
+      candidates → skills) all return 200 against `https://stagetwoforge.com`.
+- [ ] Decide what to do with `~/misc/hr_agent_ui` (~21MB folder) and `hr_agent_ui.zip`
+      (~21MB) — everything of value is ported into `hr_tech/web/`, but this is a colleague's
+      original work sitting outside git, so asked Osman rather than deleting unilaterally.
+      Options given: archive to `~/misc/archive/`, delete both, or leave as-is for now.
 
 **Exit criteria:** live, no leftover stub routes, source of truth is `hr_tech` repo only.
 
