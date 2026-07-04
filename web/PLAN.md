@@ -14,7 +14,7 @@ Comparison against the original plan is preserved at the bottom of this file for
 
 Each phase is meant to be a self-contained unit of work completable in one session. Check off
 a phase's exit criteria before starting the next one. Status as of 2026-07-03: **Phase 0 through
-Phase 3 done.**
+Phase 4 done.**
 
 ---
 
@@ -128,19 +128,23 @@ candidates with deterministic `manual_score`, `category`, and `rank` fields.
 
 ---
 
-## Phase 4 — Frontend port
+## Phase 4 — Frontend port (done, 2026-07-03)
 
-- [ ] Copy `hr_agent_ui/frontend/` into `hr_tech/web/frontend/`
-- [ ] Set `vite.config.js` → `base: '/hr/'`
-- [ ] Replace hardcoded `API_BASE_URL = "http://localhost:8000/api"` in `src/config/api.js`
-      with an env-driven value (`import.meta.env.VITE_API_BASE`, default `/hr/api` for prod,
-      `http://localhost:8000/api` for dev)
-- [ ] Check for client-side router `basename` requirements (none found in initial scan, so
-      re-verify once files are copied)
-- [ ] `npm run build` and confirm the built `dist/` loads correctly when served under a `/hr/`
-      prefix (test with a throwaway static server before wiring into the backend)
+- [x] Copied `hr_agent_ui/frontend/` into `hr_tech/web/frontend/` (excluded `node_modules`/`dist`,
+      both already gitignored from Phase 1)
+- [x] Set `vite.config.js` → `base: "/hr/"`
+- [x] Replaced hardcoded `API_BASE_URL = "http://localhost:8000/api"` in `src/config/api.js`
+      with `import.meta.env.VITE_API_BASE ?? "http://localhost:8000/api"` — dev keeps the old
+      default, prod build picks up `VITE_API_BASE=/hr/api` from the new `.env.production`
+- [x] Checked for client-side router `basename` requirements — no `react-router` in this app,
+      no other hardcoded absolute paths besides `API_BASE_URL`, so no further changes needed
+- [x] `npm install` + `npm run build`: 52 modules, clean build, no errors
+- [x] Verified built `dist/index.html` has all asset/icon paths prefixed with `/hr/`
+      (`/hr/favicon.svg`, `/hr/assets/index-*.js`, `/hr/assets/index-*.css`)
+- [x] Served `dist/` under a throwaway static server at `/hr/` (port 8877) and curled every
+      referenced path — index, favicon, JS bundle, CSS bundle all returned 200
 
-**Exit criteria:** frontend builds, all asset/API paths resolve correctly under `/hr/` prefix
+**Exit criteria met:** frontend builds, all asset/API paths resolve correctly under `/hr/` prefix
 when served locally.
 
 ---
