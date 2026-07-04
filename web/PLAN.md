@@ -14,7 +14,7 @@ Comparison against the original plan is preserved at the bottom of this file for
 
 Each phase is meant to be a self-contained unit of work completable in one session. Check off
 a phase's exit criteria before starting the next one. Status as of 2026-07-04: **Phase 0 through
-Phase 5 done.**
+Phase 6 done. Live at https://stagetwoforge.com/hr.**
 
 ---
 
@@ -205,19 +205,43 @@ will look like structurally.
 
 ---
 
-## Phase 6 — Deployment (production infra — needs explicit go-ahead per step)
+## Phase 6 — Deployment (done, 2026-07-04)
 
-- [ ] Write systemd unit `hr-tech.service` (uvicorn, `127.0.0.1:8766`, `WorkingDirectory` set,
-      env file for API keys)
-- [ ] Add nginx `location /hr { proxy_pass http://127.0.0.1:8766/; ... }` block to
-      `/etc/nginx/sites-enabled/stagetwoforge` (existing config only proxies `/` today — this
-      is the first path-based route on that domain, review carefully)
-- [ ] `nginx -t` before reload, then reload
-- [ ] Start + enable `hr-tech.service`, confirm `https://stagetwoforge.com/hr` serves the app
-- [ ] Verify TLS/cert (already covers the domain via existing Certbot cert, no new cert needed)
+- [x] Wrote systemd unit `hr-tech.service` (uvicorn, `127.0.0.1:8766`, `WorkingDirectory` set to
+      `web/backend`, `EnvironmentFile` pointing at `web/backend/.env`). Versioned at
+      `web/deploy/hr-tech.service`; installed to `/etc/systemd/system/` by the user (this
+      session has no sudo access, so all root-requiring steps — installing the unit, editing
+      nginx, reloading nginx — were prepared here and run by Osman directly)
+- [x] Added an nginx `/hr` block to `/etc/nginx/sites-enabled/stagetwoforge`: `location = /hr`
+      redirects to `/hr/` (trailing slash, so relative asset paths resolve), `location /hr/`
+      proxies to `127.0.0.1:8766/` with the prefix stripped and `proxy_buffering off` (needed
+      for the SSE pipeline-events endpoint to stream instead of buffering). Diffed against the
+      live file before handoff — confirmed byte-for-byte identical except the two new blocks.
+      Versioned at `web/deploy/nginx-hr-location.conf`
+- [x] `nginx -t` passed, reloaded, confirmed `https://stagetwoforge.com/hr/` and
+      `.../hr/api/auth/me` respond correctly
+- [x] `hr-tech.service` started, enabled on boot (`systemctl is-enabled` → `enabled`)
+- [x] Bootstrapped the real production DB (`create_sample_hr_db.py` → `migrate_auth_audit.py`)
+      with a real admin account (`osman5411@gmail.com`) — separate from all the throwaway
+      DBs used in Phase 3/5 testing
+- [x] TLS confirmed working (existing cert/CDN in front already covers the domain — no new
+      cert needed, matches the plan's expectation)
+- [x] **Found and fixed a real production bug during first login**: `create_sample_hr_db.py`
+      never actually defines the `campaign_summary` / `candidate_profile_summary` SQL views that
+      `GET /api/campaigns` and `GET /api/candidates` query — a bug in the original ported code
+      that Phase 5 testing didn't catch (that testing exercised the per-campaign endpoints,
+      which use direct joins, not these two views the frontend's initial page load actually
+      needs). Result: every fresh login hit "Could not load data from backend." Added both view
+      definitions to `create_sample_hr_db.py` (for future fresh installs) and applied them
+      directly, idempotently, to the live production DB (`CREATE VIEW IF NOT EXISTS`) without
+      touching existing rows — admin account and the campaign Osman had already created through
+      the UI were both preserved. Verified live: both endpoints now return 200.
+- [x] No `EXA_API_KEY` configured yet in `candidate_pool/.env` (doesn't exist) — deliberate,
+      deployment doesn't depend on it; search phase will need one added before it can find real
+      candidates. Not a blocker for the service being live.
 
-**Exit criteria:** app reachable at `stagetwoforge.com/hr` over HTTPS, systemd service enabled
-on boot.
+**Exit criteria met:** app reachable at `stagetwoforge.com/hr` over HTTPS, systemd service
+enabled on boot.
 
 ---
 

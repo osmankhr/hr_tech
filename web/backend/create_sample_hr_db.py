@@ -192,6 +192,61 @@ CREATE INDEX idx_campaign_candidates_contacted_by ON campaign_candidates(contact
 CREATE INDEX idx_search_runs_campaign_id ON search_runs(campaign_id);
 CREATE INDEX idx_refresh_logs_candidate_id ON refresh_logs(candidate_id);
 CREATE INDEX idx_audit_events_entity ON audit_events(entity_type, entity_id);
+
+CREATE VIEW campaign_summary AS
+SELECT
+    c.id,
+    c.campaign_code,
+    c.campaign_name,
+    c.location,
+    c.position_name,
+    c.experience,
+    c.sample_cv_filename,
+    c.target_profiles,
+    c.status,
+    c.owner,
+    c.created_at,
+    c.updated_at,
+    cu.full_name AS created_by_name,
+    uu.full_name AS updated_by_name,
+    COUNT(DISTINCT cc.candidate_id) AS candidate_count,
+    SUM(CASE WHEN cc.pipeline_stage = 'Shortlisted' THEN 1 ELSE 0 END) AS shortlisted_count,
+    GROUP_CONCAT(DISTINCT s.name) AS desired_skills
+FROM campaigns c
+LEFT JOIN users cu ON cu.id = c.created_by_user_id
+LEFT JOIN users uu ON uu.id = c.updated_by_user_id
+LEFT JOIN campaign_candidates cc ON cc.campaign_id = c.id
+LEFT JOIN campaign_skills cs ON cs.campaign_id = c.id
+LEFT JOIN skills s ON s.id = cs.skill_id
+GROUP BY c.id;
+
+CREATE VIEW candidate_profile_summary AS
+SELECT
+    cand.id,
+    cand.candidate_code,
+    cand.full_name,
+    cand.email,
+    cand.current_title,
+    cand.location,
+    cand.source,
+    cand.profile_url,
+    cand.score,
+    cand.status,
+    cand.years_experience,
+    cand.last_updated,
+    cand.notes,
+    cand.first_contacted_at,
+    cu.full_name AS created_by_name,
+    uu.full_name AS updated_by_name,
+    fu.full_name AS first_contacted_by_name,
+    GROUP_CONCAT(DISTINCT s.name) AS skills
+FROM candidates cand
+LEFT JOIN users cu ON cu.id = cand.created_by_user_id
+LEFT JOIN users uu ON uu.id = cand.updated_by_user_id
+LEFT JOIN users fu ON fu.id = cand.first_contacted_by_user_id
+LEFT JOIN candidate_skills cs ON cs.candidate_id = cand.id
+LEFT JOIN skills s ON s.id = cs.skill_id
+GROUP BY cand.id;
 """
 
 
