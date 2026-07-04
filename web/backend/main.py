@@ -1,6 +1,7 @@
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Depends, Header, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from typing import Optional
 import sqlite3
 import shutil
@@ -27,6 +28,7 @@ DB_PATH = BACKEND_DIR / "hr_candidate_search_demo.db"
 CANDIDATE_POOL_ROOT = BACKEND_DIR.parent.parent / "candidate_pool"
 CANDIDATE_POOL_CAMPAIGNS_DIR = CANDIDATE_POOL_ROOT / "campaigns"
 UPLOAD_DIR = BACKEND_DIR / "uploaded_cvs"
+FRONTEND_DIST = BACKEND_DIR.parent / "frontend" / "dist"
 
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -220,15 +222,15 @@ def _build_campaign_yaml(name: str, description: str, locations):
         "      highlights_per_url: 3",
         "",
         "query_generation:",
-        "  model: openai/gpt-5.3-codex",
+        "  model: claude-sonnet-4-5",
         "",
         "filter:",
         "  max_candidates: 10",
-        "  model: openai/gpt-5.3-codex",
+        "  model: claude-sonnet-4-5",
         "",
         "ranking:",
         "  enabled: true",
-        "  model: openai/gpt-5.3-codex",
+        "  model: claude-sonnet-4-5",
         "  input_path: data/filtered_results.json",
         "  output_path: data/ranked_results.json",
         "  summary_path: data/ranking_summary.json",
@@ -1831,3 +1833,10 @@ def list_users(current_user=Depends(require_admin)):
 
     conn.close()
     return [dict(row) for row in rows]
+
+
+# Must be mounted last: a catch-all for anything not matched by the /api/* routes above.
+# nginx strips the public /hr prefix before proxying here (see PLAN.md Phase 6), so this
+# serves the built frontend at the app root both in prod and in local dev/testing.
+if FRONTEND_DIST.is_dir():
+    app.mount("/", StaticFiles(directory=str(FRONTEND_DIST), html=True), name="frontend")

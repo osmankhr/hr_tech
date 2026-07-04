@@ -18,5 +18,11 @@ web/backend/uploaded_cvs/
 web/frontend/node_modules/
 web/frontend/dist/
 
+# candidate_pool campaign runtime data (contains real candidate PII once run) —
+# only intentional example configs (campaign.yaml, input/) should be committed
+candidate_pool/campaigns/*/data/
+candidate_pool/campaigns/*/output/
+candidate_pool/campaigns/*/logs/
+
 # OS
 .DS_Store

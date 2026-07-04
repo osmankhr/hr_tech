@@ -20,18 +20,6 @@ export function useAuth() {
     }
   };
 
-  const signUp = async (fullName, email, password) => {
-    setAuthError("");
-
-    try {
-      await authApi.signUp(fullName, email, password);
-      return await signIn(email, password);
-    } catch (error) {
-      setAuthError(error.message);
-      return false;
-    }
-  };
-
   const signOut = async () => {
     try {
       await authApi.signOut();
@@ -71,7 +59,6 @@ export function useAuth() {
     authLoading,
     authError,
     signIn,
-    signUp,
     signOut,
   };
 }

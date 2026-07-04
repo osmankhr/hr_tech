@@ -3,18 +3,12 @@ import { Button } from "../components/ui/Button";
 import { Card } from "../components/ui/Card";
 import { InputField } from "../components/ui/InputField";
 
-export default function AuthPage({ onSignIn, onSignUp, authError }) {
-  const [mode, setMode] = useState("signin");
-  const [fullName, setFullName] = useState("");
+export default function AuthPage({ onSignIn, authError }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
 
   const submit = async () => {
-    if (mode === "signin") {
-      await onSignIn(email, password);
-    } else {
-      await onSignUp(fullName, email, password);
-    }
+    await onSignIn(email, password);
   };
 
   return (
@@ -30,32 +24,7 @@ export default function AuthPage({ onSignIn, onSignUp, authError }) {
           </p>
         </div>
 
-        <div className="mb-4 grid grid-cols-2 gap-2">
-          <Button
-            variant={mode === "signin" ? "dark" : "outline"}
-            onClick={() => setMode("signin")}
-          >
-            Sign In
-          </Button>
-
-          <Button
-            variant={mode === "signup" ? "dark" : "outline"}
-            onClick={() => setMode("signup")}
-          >
-            Sign Up
-          </Button>
-        </div>
-
         <div className="space-y-4">
-          {mode === "signup" && (
-            <InputField
-              label="Full name"
-              value={fullName}
-              onChange={setFullName}
-              placeholder="HR User"
-            />
-          )}
-
           <InputField
             label="Email"
             value={email}
@@ -78,11 +47,11 @@ export default function AuthPage({ onSignIn, onSignUp, authError }) {
           )}
 
           <Button className="w-full" onClick={submit}>
-            {mode === "signin" ? "Sign In" : "Create Account"}
+            Sign In
           </Button>
 
           <p className="text-center text-xs text-slate-500">
-            Create your admin account to get started
+            Accounts are created by an administrator. Contact your admin for access.
           </p>
         </div>
       </Card>

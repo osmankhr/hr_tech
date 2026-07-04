@@ -3,7 +3,7 @@ import HRCandidateSearchPage from "./pages/HRCandidateSearchPage";
 import { useAuth } from "./hooks/useAuth";
 
 function App() {
-  const { user, authLoading, authError, signIn, signUp, signOut } = useAuth();
+  const { user, authLoading, authError, signIn, signOut } = useAuth();
 
   if (authLoading) {
     return (
@@ -17,7 +17,6 @@ function App() {
     return (
       <AuthPage
         onSignIn={signIn}
-        onSignUp={signUp}
         authError={authError}
       />
     );

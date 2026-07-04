@@ -13,8 +13,8 @@ Comparison against the original plan is preserved at the bottom of this file for
 ## Why we're doing this in phases
 
 Each phase is meant to be a self-contained unit of work completable in one session. Check off
-a phase's exit criteria before starting the next one. Status as of 2026-07-03: **Phase 0 through
-Phase 4 done.**
+a phase's exit criteria before starting the next one. Status as of 2026-07-04: **Phase 0 through
+Phase 5 done.**
 
 ---
 
@@ -149,17 +149,59 @@ when served locally.
 
 ---
 
-## Phase 5 — Local integration test
+## Phase 5 — Local integration test (done, 2026-07-04)
 
-- [ ] Serve built frontend `dist/` as static files from the FastAPI app (or via a lightweight
-      reverse-proxy setup replicating the prod path) alongside `/api/*` routes, all under one
-      local port
-- [ ] Full manual pass: admin login, create campaign, run pipeline (search → filter → rank),
-      view results, export
-- [ ] Confirm no secrets/API keys committed; `.env`/DB files gitignored
+- [x] Mounted the built frontend `dist/` as a static-files catch-all in `main.py`, added last
+      (after all `/api/*` route definitions) so it only serves paths the API doesn't claim.
+      Mirrors the Phase 6 nginx design (`location /hr { proxy_pass .../; }` strips the public
+      `/hr` prefix before proxying) — backend serves everything at root, both locally and once
+      nginx is in front of it.
+- [x] Found and fixed a real bug while wiring this up: `_build_campaign_yaml()` (the
+      web-UI-driven campaign generator) still hardcoded `model: openai/gpt-5.3-codex` for
+      `query_generation` / `filter` / `ranking` — a leftover from the colleague's Copilot-based
+      fork. Since all three phases invoke `claude --print --model <model>` directly, any
+      UI-created campaign would have failed immediately. Fixed to `claude-sonnet-4-5`.
+- [x] Found and fixed a second real bug: the login page still had a live "Sign Up" tab
+      ("Create your admin account to get started") posting to the now-removed
+      `POST /api/auth/signup` — directly contradicting the no-self-registration requirement from
+      Phase 0/1. Removed the sign-up mode, form fields, `onSignUp` prop, `authApi.signUp`, and
+      the corresponding hook logic entirely from the frontend; login page is now sign-in only.
+      Also deleted two empty, unreferenced duplicate files (`src/api/AuthPage.jsx`,
+      `src/api/useAuth.js`) left over from the fork.
+- [x] Bootstrapped fresh local databases (`create_sample_hr_db.py` → `migrate_auth_audit.py`)
+      and real `.venv`s for both `web/backend` and `candidate_pool` (previously only a throwaway
+      `.venv_test` existed for `candidate_pool`, from the Phase 3 smoke test).
+- [x] Full manual pass driven against the live running server (uvicorn on one port, frontend +
+      API together):
+      - Admin sign-in works; admin can create an `hr` user; that user is correctly blocked
+        (403) from creating other users; `POST /api/auth/signup` is gone (405/no route)
+      - Created a campaign via `POST /api/campaigns`, set up its pipeline dir via
+        `POST /api/campaigns/{id}/pipeline/setup` — confirmed the generated `campaign.yaml` now
+        has `model: claude-sonnet-4-5` everywhere
+      - No `EXA_API_KEY` is configured in this environment, so search/filter were exercised via
+        a seeded synthetic `filtered_results.json` (same approach as the Phase 3 smoke test)
+        rather than a real Exa search — ranking and report phases ran against real Claude
+        subprocess calls, not stubs
+      - Triggered the **rank** phase through `POST /api/campaigns/{id}/pipeline/run`
+        (`run_type=rank`) — resolved `candidate_pool/.venv/bin/python` correctly, ran for real,
+        completed in ~2.5 min (cold feature schema + scoring policy design), produced
+        `ranked_results.json` with rich, sensible per-feature reasoning
+      - Imported ranked results via `.../pipeline/import-ranked`; verified via
+        `GET /api/campaigns/{id}/candidates` and `.../rankings` that manual scores, categories,
+        ranks, and full agent reasoning are all stored and served correctly
+      - Triggered the **report** phase (`run_type=report`) — produced `shortlist.json`,
+        `shortlist_<date>.csv`, and `shortlist_<date>.xlsx` in the campaign's `output/` dir
+      - Confirmed the served frontend HTML/JS/CSS load correctly from the same port as `/api/*`
+- [x] Confirmed no secrets/API keys committed; `.env`, both `.venv`s, the DB, and
+      `uploaded_cvs/` are all gitignored. Added a new gitignore rule for
+      `candidate_pool/campaigns/*/{data,output,logs}/` — these can contain real candidate PII
+      once campaigns are run for real, so only intentional example configs should ever be
+      tracked (matches the existing `example_2026-06-09` convention, which only commits
+      `campaign.yaml` + `input/`)
+- [x] Cleaned up all test artifacts (throwaway campaign dir, test DB, test `dist/` build)
 
-**Exit criteria:** whole app works end-to-end on a single local port, mirroring what prod will
-look like structurally.
+**Exit criteria met:** whole app works end-to-end on a single local port, mirroring what prod
+will look like structurally.
 
 ---
 
