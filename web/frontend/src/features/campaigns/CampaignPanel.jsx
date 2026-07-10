@@ -7,6 +7,7 @@ export function CampaignPanel({
   campaigns,
   full = false,
   onOpenCampaign,
+  onViewDetails,
   onEditCampaign,
   onDeleteCampaign,
 }) {
@@ -30,6 +31,7 @@ export function CampaignPanel({
             campaign={campaign}
             full={full}
             onOpen={onOpenCampaign}
+            onViewDetails={onViewDetails}
             onEdit={onEditCampaign}
             onDelete={onDeleteCampaign}
           />

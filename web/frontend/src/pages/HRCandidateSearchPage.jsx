@@ -552,7 +552,12 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
   const changeDashboardCampaign = (campaign) => {
     setDashboardCampaignId(String(campaign.id));
     setDashboardPage(1);
-    setSelectedCampaign(campaign);
+  };
+
+  const openCampaignExplorer = (campaign) => {
+    setDashboardCampaignId(String(campaign.id));
+    setDashboardPage(1);
+    setView("dashboard");
   };
 
   const openDeleteCampaignModal = (campaign) => {
@@ -842,7 +847,8 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
               title="All Campaigns"
               campaigns={campaigns}
               full
-              onOpenCampaign={setSelectedCampaign}
+              onOpenCampaign={openCampaignExplorer}
+              onViewDetails={setSelectedCampaign}
               onEditCampaign={openEditCampaign}
               onDeleteCampaign={openDeleteCampaignModal}
             />
@@ -853,7 +859,8 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
               title="Active Campaigns"
               campaigns={activeCampaigns}
               full
-              onOpenCampaign={setSelectedCampaign}
+              onOpenCampaign={openCampaignExplorer}
+              onViewDetails={setSelectedCampaign}
               onEditCampaign={openEditCampaign}
               onDeleteCampaign={openDeleteCampaignModal}
             />
@@ -864,7 +871,8 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
               title="Past Campaigns"
               campaigns={pastCampaigns}
               full
-              onOpenCampaign={setSelectedCampaign}
+              onOpenCampaign={openCampaignExplorer}
+              onViewDetails={setSelectedCampaign}
               onEditCampaign={openEditCampaign}
               onDeleteCampaign={openDeleteCampaignModal}
             />

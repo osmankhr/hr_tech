@@ -10,12 +10,13 @@ function MetricBox({ label, value }) {
   );
 }
 
-export function CampaignCard({ campaign, full, onOpen, onEdit, onDelete }) {
+export function CampaignCard({ campaign, full, onOpen, onViewDetails, onEdit, onDelete }) {
   return (
     <div
       role="button"
       tabIndex={0}
       onClick={() => onOpen(campaign)}
+      title="Open campaign and explore candidates"
       className="cursor-pointer rounded-2xl border border-slate-200 p-4 transition hover:border-orange-200 hover:bg-orange-50/30"
     >
       <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
@@ -64,6 +65,16 @@ export function CampaignCard({ campaign, full, onOpen, onEdit, onDelete }) {
             onClick={(event) => {
               event.stopPropagation();
               onOpen(campaign);
+            }}
+          >
+            Explore Candidates
+          </Button>
+
+          <Button
+            variant="outline"
+            onClick={(event) => {
+              event.stopPropagation();
+              (onViewDetails || onOpen)(campaign);
             }}
           >
             View Details
