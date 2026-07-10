@@ -28,10 +28,23 @@ _PROMPT_TEMPLATE = """\
 
 ## Instructions
 
+First, determine the candidate's real current location and real current job title strictly \
+from the profile text/highlights above (ignore any "location" value already attached to the \
+profile — that value reflects which search bucket the record was pulled from, not a verified fact). \
+If the profile text does not state a location or title clearly, use null.
+
+If the Filtering Criteria include a location requirement, treat it as a hard requirement: only \
+recommend ACCEPT when the candidate's real location (as you just determined it) clearly satisfies \
+it. If the real location clearly does not satisfy it, recommend REJECT and say so in main_concern. \
+If the location cannot be determined from the profile text, recommend PENDING (not ACCEPT) so a \
+human can verify.
+
 Evaluate this candidate and return a JSON object with exactly these fields:
 {{
   "recommendation": "ACCEPT" | "REJECT" | "PENDING",
   "confidence": "HIGH" | "MEDIUM" | "LOW",
+  "candidate_location": "<candidate's real current location as stated in their profile text, or null>",
+  "candidate_job_title": "<candidate's real current job title as stated in their profile text, or null>",
   "key_strength": "<one sentence describing the strongest qualification>",
   "main_concern": "<one sentence describing the main gap, or null if none>",
   "reasoning": "<2-3 sentence explanation of the decision>"
@@ -55,7 +68,7 @@ class CandidateFilter:
         self.campaign_dir = campaign_dir
         self.config = config
         filter_cfg = config.get("filter", {})
-        self.model = filter_cfg.get("model", "claude-sonnet-4-5")
+        self.model = filter_cfg.get("model", "claude-sonnet-5")
         self.max_candidates = filter_cfg.get("max_candidates", 100)
 
         criteria_path = campaign_dir / "input" / "filter_criteria.md"
@@ -104,12 +117,22 @@ class CandidateFilter:
             review = {
                 "recommendation": "PENDING",
                 "confidence": "LOW",
+                "candidate_location": None,
+                "candidate_job_title": None,
                 "key_strength": None,
                 "main_concern": "AI review failed — manual review required",
                 "reasoning": "Claude CLI call failed or returned unparseable output.",
             }
 
-        return {**candidate, "ai_review": review}
+        extracted_location = review.get("candidate_location")
+        extracted_title = review.get("candidate_job_title")
+
+        return {
+            **candidate,
+            "location": extracted_location or candidate.get("location") or "",
+            "extracted_title": extracted_title or "",
+            "ai_review": review,
+        }
 
     def _load_all_candidates(self) -> list[dict[str, Any]]:
         data_dir = self.campaign_dir / "data"

@@ -354,7 +354,8 @@ class ExaSearcher:
             "highlights": highlights[:5],
             "highlight_scores": None,
             "query": query,
-            "location": loc_name,
+            "location": location_text,
+            "search_bucket": loc_name,
             "source": "peopledatalabs",
             "info": {
                 "job_title": record.get("job_title"),
@@ -415,7 +416,8 @@ class ExaSearcher:
             "highlights": highlights[:5],
             "highlight_scores": None,
             "query": query,
-            "location": loc_name,
+            "location": "",
+            "search_bucket": loc_name,
             "source": "apollo",
             "info": {
                 "apollo_id": record.get("id"),
@@ -482,7 +484,8 @@ class ExaSearcher:
                     "highlights": getattr(r, "highlights", None),
                     "highlight_scores": getattr(r, "highlight_scores", None),
                     "query": query,
-                    "location": loc_name,
+                    "location": "",
+                    "search_bucket": loc_name,
                     "source": "exa",
                     "scraped_at": datetime.now(timezone.utc).isoformat(),
                 }
