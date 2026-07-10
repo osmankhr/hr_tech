@@ -148,6 +148,41 @@ def main():
             updated_by_user_id = COALESCE(updated_by_user_id, ?)
     """, (admin_id, admin_id))
 
+    view_sql = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='view' AND name='campaign_summary'"
+    ).fetchone()
+    if view_sql and "created_by_user_id" not in view_sql[0]:
+        conn.execute("DROP VIEW campaign_summary")
+        conn.execute("""
+            CREATE VIEW campaign_summary AS
+            SELECT
+                c.id,
+                c.campaign_code,
+                c.campaign_name,
+                c.location,
+                c.position_name,
+                c.experience,
+                c.sample_cv_filename,
+                c.target_profiles,
+                c.status,
+                c.owner,
+                c.created_by_user_id,
+                c.created_at,
+                c.updated_at,
+                cu.full_name AS created_by_name,
+                uu.full_name AS updated_by_name,
+                COUNT(DISTINCT cc.candidate_id) AS candidate_count,
+                COUNT(DISTINCT CASE WHEN cc.pipeline_stage = 'Shortlisted' THEN cc.candidate_id END) AS shortlisted_count,
+                GROUP_CONCAT(DISTINCT s.name) AS desired_skills
+            FROM campaigns c
+            LEFT JOIN users cu ON cu.id = c.created_by_user_id
+            LEFT JOIN users uu ON uu.id = c.updated_by_user_id
+            LEFT JOIN campaign_candidates cc ON cc.campaign_id = c.id
+            LEFT JOIN campaign_skills cs ON cs.campaign_id = c.id
+            LEFT JOIN skills s ON s.id = cs.skill_id
+            GROUP BY c.id
+        """)
+
     conn.commit()
     conn.close()
 

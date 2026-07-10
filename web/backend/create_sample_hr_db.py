@@ -205,12 +205,13 @@ SELECT
     c.target_profiles,
     c.status,
     c.owner,
+    c.created_by_user_id,
     c.created_at,
     c.updated_at,
     cu.full_name AS created_by_name,
     uu.full_name AS updated_by_name,
     COUNT(DISTINCT cc.candidate_id) AS candidate_count,
-    SUM(CASE WHEN cc.pipeline_stage = 'Shortlisted' THEN 1 ELSE 0 END) AS shortlisted_count,
+    COUNT(DISTINCT CASE WHEN cc.pipeline_stage = 'Shortlisted' THEN cc.candidate_id END) AS shortlisted_count,
     GROUP_CONCAT(DISTINCT s.name) AS desired_skills
 FROM campaigns c
 LEFT JOIN users cu ON cu.id = c.created_by_user_id

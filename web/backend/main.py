@@ -116,6 +116,26 @@ def get_connection():
     return conn
 
 
+def _get_owned_campaign(conn, campaign_id, current_user):
+    """Fetch a campaign, scoped to its owner unless the caller is an admin.
+
+    Non-owners get a 404 (not 403) so hr accounts can't probe for the
+    existence of other accounts' campaigns.
+    """
+    campaign = conn.execute(
+        "SELECT id, campaign_code, created_by_user_id FROM campaigns WHERE id = ?",
+        (campaign_id,),
+    ).fetchone()
+
+    if not campaign:
+        return None
+
+    if current_user["role"] != "admin" and campaign["created_by_user_id"] != current_user["id"]:
+        return None
+
+    return campaign
+
+
 def ensure_pipeline_tables():
     conn = get_connection()
     conn.executescript("""
@@ -194,6 +214,36 @@ def _slugify(value: str):
     return slug or "campaign"
 
 
+def _build_location_filter_clause(locations):
+    names = [str(loc.get("name", "")).strip() for loc in locations if str(loc.get("name", "")).strip()]
+    if not names:
+        return ""
+
+    hint_lines = [
+        f"- {loc['name']}: {loc['hint']}"
+        for loc in locations
+        if str(loc.get("name", "")).strip() and str(loc.get("hint", "")).strip()
+    ]
+
+    lines = [
+        "## Location Requirement (hard filter)",
+        "",
+        f"The candidate must be currently based in one of: {', '.join(names)}.",
+    ]
+    if hint_lines:
+        lines.append("")
+        lines.extend(hint_lines)
+    lines.extend([
+        "",
+        "Determine the candidate's real current location strictly from their profile text — "
+        "do not trust any location label attached to the search query itself. If it clearly "
+        "does not match, reject. If it cannot be determined from the profile text, mark as "
+        "pending for manual review rather than accepting.",
+        "",
+    ])
+    return "\n".join(lines)
+
+
 def _build_campaign_yaml(name: str, description: str, locations):
     lines = [
         f"name: {json.dumps(name, ensure_ascii=False)}",
@@ -222,15 +272,15 @@ def _build_campaign_yaml(name: str, description: str, locations):
         "      highlights_per_url: 3",
         "",
         "query_generation:",
-        "  model: claude-sonnet-4-5",
+        "  model: claude-sonnet-5",
         "",
         "filter:",
-        "  max_candidates: 10",
-        "  model: claude-sonnet-4-5",
+        "  max_candidates: 40",
+        "  model: claude-sonnet-5",
         "",
         "ranking:",
         "  enabled: true",
-        "  model: claude-sonnet-4-5",
+        "  model: claude-sonnet-5",
         "  input_path: data/filtered_results.json",
         "  output_path: data/ranked_results.json",
         "  summary_path: data/ranking_summary.json",
@@ -408,11 +458,19 @@ def _run_pipeline_in_background(run_id: int, command, cwd: Path):
 @app.get("/api/campaigns")
 def list_campaigns(current_user=Depends(get_current_user)):
     conn = get_connection()
-    rows = conn.execute("""
-        SELECT *
-        FROM campaign_summary
-        ORDER BY created_at DESC
-    """).fetchall()
+    if current_user["role"] == "admin":
+        rows = conn.execute("""
+            SELECT *
+            FROM campaign_summary
+            ORDER BY created_at DESC
+        """).fetchall()
+    else:
+        rows = conn.execute("""
+            SELECT *
+            FROM campaign_summary
+            WHERE created_by_user_id = ?
+            ORDER BY created_at DESC
+        """, (current_user["id"],)).fetchall()
     conn.close()
 
     return [dict(row) for row in rows]
@@ -430,10 +488,7 @@ def setup_pipeline_campaign(
 ):
     conn = get_connection()
 
-    campaign = conn.execute(
-        "SELECT id, campaign_code FROM campaigns WHERE id = ?",
-        (campaign_id,),
-    ).fetchone()
+    campaign = _get_owned_campaign(conn, campaign_id, current_user)
 
     if not campaign:
         conn.close()
@@ -485,7 +540,12 @@ def setup_pipeline_campaign(
         encoding="utf-8",
     )
     job_description_path.write_text(job_description, encoding="utf-8")
-    filter_criteria_path.write_text(filter_criteria, encoding="utf-8")
+
+    location_clause = _build_location_filter_clause(cleaned_locations)
+    full_filter_criteria = (
+        f"{location_clause}\n{filter_criteria}" if location_clause else filter_criteria
+    )
+    filter_criteria_path.write_text(full_filter_criteria, encoding="utf-8")
 
     now = utc_now()
     conn.execute("""
@@ -532,6 +592,11 @@ def setup_pipeline_campaign(
 @app.get("/api/campaigns/{campaign_id}/pipeline/runs")
 def list_pipeline_runs(campaign_id: int, current_user=Depends(get_current_user)):
     conn = get_connection()
+
+    if not _get_owned_campaign(conn, campaign_id, current_user):
+        conn.close()
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
     rows = conn.execute("""
         SELECT
             id,
@@ -569,7 +634,13 @@ def stream_pipeline_events(
         raise HTTPException(status_code=401, detail="Not authenticated")
 
     # Validate caller once for SSE handshake.
-    _get_current_user_from_raw_token(raw_token)
+    current_user = _get_current_user_from_raw_token(raw_token)
+
+    conn = get_connection()
+    owned = _get_owned_campaign(conn, campaign_id, current_user)
+    conn.close()
+    if not owned:
+        raise HTTPException(status_code=404, detail="Campaign not found")
 
     def event_stream():
         last_signature = None
@@ -646,6 +717,11 @@ def run_pipeline(
         raise HTTPException(status_code=400, detail="Invalid run_type")
 
     conn = get_connection()
+
+    if not _get_owned_campaign(conn, campaign_id, current_user):
+        conn.close()
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
     config_row = conn.execute(
         """
         SELECT pipeline_dir
@@ -745,11 +821,7 @@ def import_ranked_results(
 ):
     conn = get_connection()
 
-    campaign = conn.execute(
-        "SELECT id FROM campaigns WHERE id = ?",
-        (campaign_id,),
-    ).fetchone()
-    if not campaign:
+    if not _get_owned_campaign(conn, campaign_id, current_user):
         conn.close()
         raise HTTPException(status_code=404, detail="Campaign not found")
 
@@ -813,7 +885,8 @@ def import_ranked_results(
 
             profile_url = str(item.get("url") or "").strip()
             email = str(item.get("email") or "").strip().lower()
-            title = str(item.get("title") or "").strip()
+            full_name = str(item.get("title") or "").strip()
+            job_title = str(item.get("extracted_title") or "").strip() or full_name
             source = str(item.get("source") or "candidate_pool")
             location = str(item.get("location") or "").strip()
             recommendation = str((item.get("ai_review") or {}).get("recommendation") or "PENDING").upper()
@@ -862,9 +935,9 @@ def import_ranked_results(
                         last_updated = ?
                     WHERE id = ?
                 """, (
-                    title or "Unknown Candidate",
+                    full_name or "Unknown Candidate",
                     email or None,
-                    title,
+                    job_title,
                     location,
                     source,
                     profile_url,
@@ -896,9 +969,9 @@ def import_ranked_results(
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     candidate_code,
-                    title or "Unknown Candidate",
+                    full_name or "Unknown Candidate",
                     email or None,
-                    title,
+                    job_title,
                     location,
                     source,
                     profile_url or None,
@@ -1008,6 +1081,11 @@ def import_ranked_results(
 @app.get("/api/campaigns/{campaign_id}/rankings")
 def list_campaign_rankings(campaign_id: int, current_user=Depends(get_current_user)):
     conn = get_connection()
+
+    if not _get_owned_campaign(conn, campaign_id, current_user):
+        conn.close()
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
     rows = conn.execute("""
         SELECT
             cr.candidate_id,
@@ -1060,6 +1138,11 @@ def list_campaign_candidates(
     offset = (page - 1) * page_size
 
     conn = get_connection()
+
+    if not _get_owned_campaign(conn, campaign_id, current_user):
+        conn.close()
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
     total_count = conn.execute(
         """
         SELECT COUNT(*) AS count
@@ -1137,12 +1220,20 @@ def list_campaign_candidates(
 @app.get("/api/campaigns/active")
 def list_active_campaigns(current_user=Depends(get_current_user)):
     conn = get_connection()
-    rows = conn.execute("""
-        SELECT *
-        FROM campaign_summary
-        WHERE status = 'Active'
-        ORDER BY created_at DESC
-    """).fetchall()
+    if current_user["role"] == "admin":
+        rows = conn.execute("""
+            SELECT *
+            FROM campaign_summary
+            WHERE status = 'Active'
+            ORDER BY created_at DESC
+        """).fetchall()
+    else:
+        rows = conn.execute("""
+            SELECT *
+            FROM campaign_summary
+            WHERE status = 'Active' AND created_by_user_id = ?
+            ORDER BY created_at DESC
+        """, (current_user["id"],)).fetchall()
     conn.close()
 
     return [dict(row) for row in rows]
@@ -1151,12 +1242,20 @@ def list_active_campaigns(current_user=Depends(get_current_user)):
 @app.get("/api/campaigns/past")
 def list_past_campaigns(current_user=Depends(get_current_user)):
     conn = get_connection()
-    rows = conn.execute("""
-        SELECT *
-        FROM campaign_summary
-        WHERE status = 'Past'
-        ORDER BY created_at DESC
-    """).fetchall()
+    if current_user["role"] == "admin":
+        rows = conn.execute("""
+            SELECT *
+            FROM campaign_summary
+            WHERE status = 'Past'
+            ORDER BY created_at DESC
+        """).fetchall()
+    else:
+        rows = conn.execute("""
+            SELECT *
+            FROM campaign_summary
+            WHERE status = 'Past' AND created_by_user_id = ?
+            ORDER BY created_at DESC
+        """, (current_user["id"],)).fetchall()
     conn.close()
 
     return [dict(row) for row in rows]
@@ -1279,11 +1378,12 @@ def create_campaign(
             target_profiles,
             status,
             owner,
+            created_by_user_id,
             created_at,
             updated_at
         )
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, ( 
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
         campaign_code,
         campaign_name,
         location,
@@ -1291,8 +1391,9 @@ def create_campaign(
         experience,
         saved_filename,
         target_profiles,
-        "Active",  
+        "Active",
         "System",
+        current_user["id"],
         now,
         now
     ))
@@ -1341,6 +1442,10 @@ def create_campaign(
 def get_campaign(campaign_id: int,
                  current_user=Depends(get_current_user)):
     conn = get_connection()
+
+    if not _get_owned_campaign(conn, campaign_id, current_user):
+        conn.close()
+        raise HTTPException(status_code=404, detail="Campaign not found")
 
     row = conn.execute("""
         SELECT
@@ -1399,12 +1504,7 @@ def update_campaign(
     cur = conn.cursor()
     now = datetime.utcnow().isoformat(timespec="seconds")
 
-    existing = conn.execute(
-        "SELECT id FROM campaigns WHERE id = ?",
-        (campaign_id,)
-    ).fetchone()
-
-    if not existing:
+    if not _get_owned_campaign(conn, campaign_id, current_user):
         conn.close()
         raise HTTPException(status_code=404, detail="Campaign not found")
 
@@ -1472,12 +1572,7 @@ def update_campaign(
 def delete_campaign(campaign_id: int, current_user=Depends(get_current_user)):
     conn = get_connection()
 
-    campaign = conn.execute(
-        "SELECT id FROM campaigns WHERE id = ?",
-        (campaign_id,),
-    ).fetchone()
-
-    if not campaign:
+    if not _get_owned_campaign(conn, campaign_id, current_user):
         conn.close()
         raise HTTPException(status_code=404, detail="Campaign not found")
 
