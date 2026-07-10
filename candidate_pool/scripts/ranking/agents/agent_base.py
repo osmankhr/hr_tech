@@ -18,12 +18,14 @@ class JsonAgent:
         self.timeout = timeout
 
     def call_json(self, *, system: str, user: str) -> dict[str, Any] | None:
-        prompt = f"{system}\n\n{user}" if system else user
+        cmd = ["claude", "--print", "--model", self.model, "--tools", ""]
+        if system:
+            cmd += ["--system-prompt", system]
 
         try:
             result = subprocess.run(
-                ["claude", "--print", "--model", self.model],
-                input=prompt,
+                cmd,
+                input=user,
                 capture_output=True,
                 text=True,
                 timeout=self.timeout,

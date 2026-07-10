@@ -12,10 +12,13 @@ import yaml
 
 logger = logging.getLogger(__name__)
 
-_PROMPT_TEMPLATE = """\
-You are a recruitment researcher designing search queries for Exa.ai's people-search API.
-Exa searches professional profiles (LinkedIn, personal sites, GitHub bios, etc.).
+_SYSTEM_INSTRUCTIONS = """\
+You are a recruitment researcher designing search queries for Exa.ai's people-search API. \
+Exa searches professional profiles (LinkedIn, personal sites, GitHub bios, etc.). Respond \
+with ONLY a valid JSON array of strings — no markdown, no explanation, no preamble.
+"""
 
+_PROMPT_TEMPLATE = """\
 ## Job Description
 
 {job_description}
@@ -35,9 +38,6 @@ Rules:
 - Do NOT repeat the same query with minor wording changes
 - Do NOT include location words that might over-restrict results unless the location is a country
   (e.g. prefer "data scientist Turkey" over "data scientist Istanbul" to cast a wider net)
-
-Respond with ONLY a JSON array of strings — no markdown, no explanation:
-["query 1", "query 2", ...]
 """
 
 _SEED_CV_SECTION = """\
@@ -81,7 +81,16 @@ def _load_seed_cvs(campaign_dir: Path) -> list[tuple[str, str]]:
 def _call_claude(prompt: str, model: str) -> list[str] | None:
     try:
         result = subprocess.run(
-            ["claude", "--print", "--model", model],
+            [
+                "claude",
+                "--print",
+                "--model",
+                model,
+                "--tools",
+                "",
+                "--system-prompt",
+                _SYSTEM_INSTRUCTIONS,
+            ],
             input=prompt,
             capture_output=True,
             text=True,
@@ -115,7 +124,7 @@ class QueryGenerator:
         self.campaign_dir = campaign_dir
         self.config = config
         qg_cfg = config.get("query_generation", {})
-        self.model = qg_cfg.get("model", config.get("filter", {}).get("model", "claude-sonnet-4-5"))
+        self.model = qg_cfg.get("model", config.get("filter", {}).get("model", "claude-sonnet-5"))
         self.num_queries = config.get("search", {}).get("num_queries_per_location", 6)
         self._out_path = campaign_dir / "data" / "generated_queries.yaml"
 

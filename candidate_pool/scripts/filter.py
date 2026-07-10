@@ -16,8 +16,6 @@ criteria and respond ONLY with a valid JSON object — no markdown fences, no pr
 """
 
 _PROMPT_TEMPLATE = """\
-{system}
-
 ## Filtering Criteria
 
 {criteria}
@@ -79,7 +77,16 @@ class CandidateFilter:
     def _call_claude(self, prompt: str) -> dict[str, Any] | None:
         try:
             result = subprocess.run(
-                ["claude", "--print", "--model", self.model],
+                [
+                    "claude",
+                    "--print",
+                    "--model",
+                    self.model,
+                    "--tools",
+                    "",
+                    "--system-prompt",
+                    _SYSTEM_INSTRUCTIONS,
+                ],
                 input=prompt,
                 capture_output=True,
                 text=True,
@@ -107,7 +114,6 @@ class CandidateFilter:
         }
 
         prompt = _PROMPT_TEMPLATE.format(
-            system=_SYSTEM_INSTRUCTIONS,
             criteria=self.criteria,
             candidate_json=json.dumps(summary, indent=2, ensure_ascii=False),
         )
