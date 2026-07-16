@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Depends, Header, Query
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Depends, Header, Query, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -1928,6 +1928,66 @@ def list_users(current_user=Depends(require_admin)):
 
     conn.close()
     return [dict(row) for row in rows]
+
+
+@app.get("/api/candidates/{candidate_id}/activities")
+def get_candidate_activities(candidate_id: int, current_user=Depends(get_current_user)):
+    conn = get_connection()
+    rows = conn.execute("""
+        SELECT a.id, a.action, a.description, a.created_at, u.full_name as user_name
+        FROM audit_events a
+        LEFT JOIN users u ON a.user_id = u.id
+        WHERE a.entity_type IN ('candidate', 'campaign_candidate') AND a.entity_id = ?
+        ORDER BY a.created_at DESC
+    """, (candidate_id,)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+@app.get("/api/candidates/{candidate_id}/comments")
+def get_candidate_comments(candidate_id: int, current_user=Depends(get_current_user)):
+    conn = get_connection()
+    rows = conn.execute("""
+        SELECT c.id, c.parent_id, c.content, c.created_at, u.full_name as user_name, c.user_id
+        FROM candidate_comments c
+        JOIN users u ON c.user_id = u.id
+        WHERE c.candidate_id = ?
+        ORDER BY c.created_at ASC
+    """, (candidate_id,)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+@app.post("/api/candidates/{candidate_id}/comments")
+def add_candidate_comment(
+    candidate_id: int, 
+    content: str = Form(...), 
+    parent_id: Optional[int] = Form(None), 
+    current_user=Depends(get_current_user)
+):
+    if not content:
+        raise HTTPException(status_code=400, detail="Content is required")
+
+    conn = get_connection()
+    cur = conn.cursor()
+    now = datetime.utcnow().isoformat(timespec="seconds")
+    
+    cur.execute("""
+        INSERT INTO candidate_comments (candidate_id, user_id, parent_id, content, created_at)
+        VALUES (?, ?, ?, ?, ?)
+    """, (candidate_id, current_user["id"], parent_id, content, now))
+    
+    conn.commit()
+    
+    # Audit event
+    cur.execute("""
+        INSERT INTO audit_events (entity_type, entity_id, action, description, user_id, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, ('candidate', candidate_id, 'Added Comment', "Comment added", current_user["id"], now))
+    
+    conn.commit()
+    conn.close()
+    
+    return {"status": "success"}
+
 
 
 # Must be mounted last: a catch-all for anything not matched by the /api/* routes above.

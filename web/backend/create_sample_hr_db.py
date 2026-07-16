@@ -170,6 +170,18 @@ CREATE TABLE audit_events (
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
 );
 
+CREATE TABLE candidate_comments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    candidate_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    parent_id INTEGER,
+    content TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (candidate_id) REFERENCES candidates(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (parent_id) REFERENCES candidate_comments(id) ON DELETE CASCADE
+);
+
 CREATE INDEX idx_users_email ON users(email);
 CREATE INDEX idx_users_role ON users(role);
 CREATE INDEX idx_auth_tokens_token_hash ON auth_tokens(token_hash);
@@ -273,9 +285,10 @@ tables_to_count = [
     "search_runs",
     "refresh_logs",
     "audit_events",
+    "candidate_comments",
 ]
 
-print(f"✓ Created {DB_PATH}")
+print(f"[SUCCESS] Created {DB_PATH}")
 print()
 print("Database schema created successfully!")
 print()
