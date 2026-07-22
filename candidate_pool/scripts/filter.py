@@ -1,12 +1,14 @@
 """AI-driven candidate filtering via Claude headless mode."""
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import logging
 import re
-import subprocess
 from pathlib import Path
 from typing import Any
+
+from llm_provider import call_model_text
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +53,7 @@ Evaluate this candidate and return a JSON object with exactly these fields:
 
 
 def _extract_json(text: str) -> dict[str, Any] | None:
-    """Extract first JSON object from claude output."""
+    """Extract first JSON object from model output."""
     match = re.search(r"\{[^{}]*(?:\{[^{}]*\}[^{}]*)?\}", text, re.DOTALL)
     if not match:
         return None
@@ -68,41 +70,23 @@ class CandidateFilter:
         filter_cfg = config.get("filter", {})
         self.model = filter_cfg.get("model", "claude-sonnet-5")
         self.max_candidates = filter_cfg.get("max_candidates", 100)
+        self.max_workers = max(1, int(filter_cfg.get("max_workers", 6)))
 
         criteria_path = campaign_dir / "input" / "filter_criteria.md"
         if not criteria_path.exists():
             raise FileNotFoundError(f"filter_criteria.md not found: {criteria_path}")
         self.criteria = criteria_path.read_text()
 
-    def _call_claude(self, prompt: str) -> dict[str, Any] | None:
-        try:
-            result = subprocess.run(
-                [
-                    "claude",
-                    "--print",
-                    "--model",
-                    self.model,
-                    "--tools",
-                    "",
-                    "--system-prompt",
-                    _SYSTEM_INSTRUCTIONS,
-                ],
-                input=prompt,
-                capture_output=True,
-                text=True,
-                timeout=120,
-            )
-        except FileNotFoundError:
-            logger.error("claude CLI not found — ensure Claude Code is installed and on PATH")
+    def _call_model(self, prompt: str) -> dict[str, Any] | None:
+        output = call_model_text(
+            prompt=prompt,
+            model=self.model,
+            system=_SYSTEM_INSTRUCTIONS,
+            timeout=120,
+        )
+        if not output:
             return None
-        except subprocess.TimeoutExpired:
-            logger.warning("claude CLI timed out")
-            return None
-
-        if result.returncode != 0:
-            logger.warning("claude CLI returned non-zero: %s", result.stderr[:200])
-
-        return _extract_json(result.stdout)
+        return _extract_json(output)
 
     def _review_candidate(self, candidate: dict[str, Any]) -> dict[str, Any]:
         summary = {
@@ -118,7 +102,7 @@ class CandidateFilter:
             candidate_json=json.dumps(summary, indent=2, ensure_ascii=False),
         )
 
-        review = self._call_claude(prompt)
+        review = self._call_model(prompt)
         if review is None:
             review = {
                 "recommendation": "PENDING",
@@ -127,7 +111,7 @@ class CandidateFilter:
                 "candidate_job_title": None,
                 "key_strength": None,
                 "main_concern": "AI review failed — manual review required",
-                "reasoning": "Claude CLI call failed or returned unparseable output.",
+                "reasoning": "Model call failed or returned unparseable output.",
             }
 
         extracted_location = review.get("candidate_location")
@@ -167,10 +151,27 @@ class CandidateFilter:
         )
 
         reviewed: list[dict[str, Any]] = []
-        for i, candidate in enumerate(to_review, 1):
+
+        def _review_one(index: int, candidate: dict[str, Any]) -> tuple[int, dict[str, Any]]:
             label = candidate.get("title") or candidate.get("url", "?")
-            logger.info("[%d/%d] %s", i, len(to_review), label)
-            reviewed.append(self._review_candidate(candidate))
+            logger.info("[%d/%d] %s", index + 1, len(to_review), label)
+            return index, self._review_candidate(candidate)
+
+        if to_review:
+            workers = min(self.max_workers, len(to_review))
+            logger.info("Running AI review in parallel with %d workers", workers)
+            reviewed_by_index: dict[int, dict[str, Any]] = {}
+
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                futures = {
+                    executor.submit(_review_one, idx, candidate): idx
+                    for idx, candidate in enumerate(to_review)
+                }
+                for future in as_completed(futures):
+                    idx, result = future.result()
+                    reviewed_by_index[idx] = result
+
+            reviewed = [reviewed_by_index[idx] for idx in sorted(reviewed_by_index)]
 
         # Candidates beyond cap get a PENDING placeholder (full data preserved)
         for candidate in skipped:

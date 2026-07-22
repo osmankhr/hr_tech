@@ -7,6 +7,8 @@ import sqlite3
 import shutil
 import os
 import json
+import csv
+import io
 import re
 import subprocess
 import threading
@@ -29,6 +31,7 @@ CANDIDATE_POOL_ROOT = BACKEND_DIR.parent.parent / "candidate_pool"
 CANDIDATE_POOL_CAMPAIGNS_DIR = CANDIDATE_POOL_ROOT / "campaigns"
 UPLOAD_DIR = BACKEND_DIR / "uploaded_cvs"
 FRONTEND_DIST = BACKEND_DIR.parent / "frontend" / "dist"
+MAX_WORKERS_CAP = 20
 
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -348,6 +351,79 @@ def _pipeline_stage_from_status(status: str):
     if status == "Rejected":
         return "Rejected"
     return "Reviewed"
+
+
+def _flatten_for_csv(prefix: str, value, out: dict):
+    if isinstance(value, dict):
+        for key, nested in value.items():
+            next_prefix = f"{prefix}.{key}" if prefix else str(key)
+            _flatten_for_csv(next_prefix, nested, out)
+        return
+
+    if isinstance(value, list):
+        out[prefix] = json.dumps(value, ensure_ascii=False)
+        return
+
+    out[prefix] = value
+
+
+SEARCH_CSV_EXCLUDED_FIELDS = {
+    "score",
+    "text",
+    "highlights",
+    "highlight_scores",
+    "source",
+}
+
+RANKED_CSV_EXCLUDED_FIELDS = SEARCH_CSV_EXCLUDED_FIELDS | {
+    "ai_review.main_concern",
+    "ranking",
+}
+
+
+def _normalize_csv_cell(value):
+    if value is None:
+        return ""
+
+    if isinstance(value, (dict, list)):
+        raw = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    else:
+        raw = str(value)
+
+    return re.sub(r"\s+", " ", raw).strip()
+
+
+def _should_exclude_csv_field(key: str, excluded_fields: set[str], rank_summary_only: bool):
+    if key in excluded_fields:
+        return True
+
+    if rank_summary_only and key.startswith("ranking.") and not key.endswith("summary"):
+        return True
+
+    return False
+
+
+def _build_csv_rows(rows: list[dict], excluded_fields: set[str], rank_summary_only: bool = False):
+    flattened_rows = []
+    fieldnames = set()
+
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+
+        flat = {}
+        _flatten_for_csv("", row, flat)
+
+        normalized = {}
+        for key, value in flat.items():
+            if _should_exclude_csv_field(key, excluded_fields, rank_summary_only):
+                continue
+            normalized[key] = _normalize_csv_cell(value)
+
+        flattened_rows.append(normalized)
+        fieldnames.update(normalized.keys())
+
+    return flattened_rows, sorted(fieldnames)
 
 
 def _remove_pipeline_campaign_dir(pipeline_dir: Optional[str]):
@@ -702,6 +778,7 @@ def stream_pipeline_events(
 def run_pipeline(
     campaign_id: int,
     run_type: str = Form("full"),
+    max_candidates: Optional[int] = Form(default=None),
     current_user=Depends(get_current_user),
 ):
     allowed_run_types = {
@@ -715,6 +792,9 @@ def run_pipeline(
 
     if run_type not in allowed_run_types:
         raise HTTPException(status_code=400, detail="Invalid run_type")
+
+    if max_candidates is not None and (max_candidates < 1 or max_candidates > 100):
+        raise HTTPException(status_code=400, detail="max_candidates must be between 1 and 100")
 
     conn = get_connection()
 
@@ -768,6 +848,19 @@ def run_pipeline(
         str(pipeline_dir),
         *allowed_run_types[run_type],
     ]
+
+    if max_candidates is not None:
+        runtime_workers = min(max_candidates, MAX_WORKERS_CAP)
+        command += [
+            "--filter-max-candidates",
+            str(max_candidates),
+            "--ranking-max-candidates",
+            str(max_candidates),
+            "--filter-max-workers",
+            str(runtime_workers),
+            "--ranking-max-workers",
+            str(runtime_workers),
+        ]
 
     now = utc_now()
     cur = conn.execute(
@@ -1076,6 +1169,185 @@ def import_ranked_results(
         "updated_candidates": updated_count,
         "linked_to_campaign": linked_count,
     }
+
+
+def _resolve_ranked_results_artifact(
+    conn,
+    campaign_id: int,
+    current_user,
+):
+    if not _get_owned_campaign(conn, campaign_id, current_user):
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    pipeline_dir = _resolve_pipeline_dir(conn, campaign_id, current_user)
+    return pipeline_dir / "data" / "ranked_results.json"
+
+
+def _resolve_pipeline_dir(conn, campaign_id: int, current_user) -> Path:
+    if not _get_owned_campaign(conn, campaign_id, current_user):
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    config_row = conn.execute(
+        """
+        SELECT pipeline_dir
+        FROM pipeline_campaign_configs
+        WHERE campaign_id = ?
+        """,
+        (campaign_id,),
+    ).fetchone()
+
+    pipeline_dir = (config_row["pipeline_dir"] if config_row else "").strip()
+    if not pipeline_dir:
+        raise HTTPException(
+            status_code=400,
+            detail="No pipeline config found. Save pipeline config first.",
+        )
+
+    return Path(pipeline_dir)
+
+
+def _resolve_search_results_files(conn, campaign_id: int, current_user) -> list[Path]:
+    pipeline_dir = _resolve_pipeline_dir(conn, campaign_id, current_user)
+    data_dir = pipeline_dir / "data"
+    if not data_dir.exists():
+        return []
+
+    return sorted(data_dir.glob("*/raw_results.json"))
+
+
+@app.get("/api/campaigns/{campaign_id}/pipeline/search-results-status")
+def get_search_results_status(
+    campaign_id: int,
+    current_user=Depends(get_current_user),
+):
+    conn = get_connection()
+    try:
+        files = _resolve_search_results_files(conn, campaign_id, current_user)
+    finally:
+        conn.close()
+
+    total_candidates = 0
+    for path in files:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if isinstance(payload, list):
+            total_candidates += len(payload)
+
+    return {
+        "exists": bool(files),
+        "file_count": len(files),
+        "total_candidates": total_candidates,
+        "artifact_paths": [str(path) for path in files],
+    }
+
+
+@app.get("/api/campaigns/{campaign_id}/pipeline/export-search-csv")
+def export_search_csv(
+    campaign_id: int,
+    current_user=Depends(get_current_user),
+):
+    conn = get_connection()
+    try:
+        files = _resolve_search_results_files(conn, campaign_id, current_user)
+    finally:
+        conn.close()
+
+    if not files:
+        raise HTTPException(status_code=404, detail="No search raw_results.json files found")
+
+    rows: list[dict] = []
+    for path in files:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if isinstance(payload, list):
+            rows.extend(item for item in payload if isinstance(item, dict))
+
+    if not rows:
+        raise HTTPException(status_code=404, detail="Search results files are empty")
+
+    flattened_rows, ordered_fields = _build_csv_rows(rows, SEARCH_CSV_EXCLUDED_FIELDS)
+    output = io.StringIO()
+    writer = csv.DictWriter(output, fieldnames=ordered_fields)
+    writer.writeheader()
+    for flat in flattened_rows:
+        writer.writerow(flat)
+
+    csv_bytes = output.getvalue().encode("utf-8")
+    filename = f"campaign_{campaign_id}_search_results.csv"
+
+    return StreamingResponse(
+        iter([csv_bytes]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
+
+@app.get("/api/campaigns/{campaign_id}/pipeline/ranked-results-status")
+def get_ranked_results_status(
+    campaign_id: int,
+    current_user=Depends(get_current_user),
+):
+    conn = get_connection()
+    try:
+        artifact_file = _resolve_ranked_results_artifact(
+            conn,
+            campaign_id,
+            current_user,
+        )
+    finally:
+        conn.close()
+
+    return {
+        "exists": artifact_file.exists(),
+        "artifact_path": str(artifact_file),
+    }
+
+
+@app.get("/api/campaigns/{campaign_id}/pipeline/export-ranked-csv")
+def export_ranked_csv(
+    campaign_id: int,
+    current_user=Depends(get_current_user),
+):
+    conn = get_connection()
+    try:
+        artifact_file = _resolve_ranked_results_artifact(
+            conn,
+            campaign_id,
+            current_user,
+        )
+    finally:
+        conn.close()
+
+    if not artifact_file.exists():
+        raise HTTPException(status_code=404, detail="ranked_results.json not found")
+
+    rows = json.loads(artifact_file.read_text(encoding="utf-8"))
+    if not isinstance(rows, list):
+        raise HTTPException(status_code=400, detail="ranked_results.json must contain a list")
+
+    flattened_rows, ordered_fields = _build_csv_rows(
+        rows,
+        RANKED_CSV_EXCLUDED_FIELDS,
+        rank_summary_only=True,
+    )
+    output = io.StringIO()
+    writer = csv.DictWriter(output, fieldnames=ordered_fields)
+    writer.writeheader()
+    for flat in flattened_rows:
+        writer.writerow(flat)
+
+    csv_bytes = output.getvalue().encode("utf-8")
+    filename = f"campaign_{campaign_id}_ranked_results.csv"
+
+    return StreamingResponse(
+        iter([csv_bytes]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
 
 
 @app.get("/api/campaigns/{campaign_id}/rankings")

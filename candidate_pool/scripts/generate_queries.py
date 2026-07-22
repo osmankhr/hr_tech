@@ -4,11 +4,12 @@ from __future__ import annotations
 import json
 import logging
 import re
-import subprocess
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+from llm_provider import call_model_text
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +39,7 @@ Rules:
 - Do NOT repeat the same query with minor wording changes
 - Do NOT include location words that might over-restrict results unless the location is a country
   (e.g. prefer "data scientist Turkey" over "data scientist Istanbul" to cast a wider net)
-"""
+- HARD EXCLUSION: Every query must explicitly include a negative employment signal indicating that the target candidate does not work for ING (e.g. "not working at ING", "does not work for ING", "excluding ING employees"). This exclusion should be expressed in the query itself and must not otherwise restrict relevant roles, skills, industries, or employers."""
 
 _SEED_CV_SECTION = """\
 ## Seed CVs (ideal candidate examples)
@@ -78,38 +79,20 @@ def _load_seed_cvs(campaign_dir: Path) -> list[tuple[str, str]]:
     return results
 
 
-def _call_claude(prompt: str, model: str) -> list[str] | None:
-    try:
-        result = subprocess.run(
-            [
-                "claude",
-                "--print",
-                "--model",
-                model,
-                "--tools",
-                "",
-                "--system-prompt",
-                _SYSTEM_INSTRUCTIONS,
-            ],
-            input=prompt,
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
-    except FileNotFoundError:
-        logger.error("claude CLI not found — ensure Claude Code is installed and on PATH")
+def _call_model(prompt: str, model: str) -> list[str] | None:
+    output = call_model_text(
+        prompt=prompt,
+        model=model,
+        system=_SYSTEM_INSTRUCTIONS,
+        timeout=120,
+    )
+    if not output:
         return None
-    except subprocess.TimeoutExpired:
-        logger.warning("claude CLI timed out during query generation")
-        return None
-
-    if result.returncode != 0:
-        logger.warning("claude CLI non-zero exit: %s", result.stderr[:200])
 
     # Extract JSON array from output
-    match = re.search(r"\[.*\]", result.stdout, re.DOTALL)
+    match = re.search(r"\[.*\]", output, re.DOTALL)
     if not match:
-        logger.warning("No JSON array found in claude output: %s", result.stdout[:300])
+        logger.warning("No JSON array found in model output: %s", output[:300])
         return None
     try:
         queries = json.loads(match.group())
@@ -161,7 +144,7 @@ class QueryGenerator:
     def generate_for_location(self, loc_name: str, hint: str | None = None) -> list[str]:
         prompt = self._build_prompt(loc_name, hint)
         logger.info("Generating %d queries for location: %s", self.num_queries, loc_name)
-        queries = _call_claude(prompt, self.model)
+        queries = _call_model(prompt, self.model)
         if not queries:
             logger.error("Query generation failed for %s — no queries returned", loc_name)
             return []

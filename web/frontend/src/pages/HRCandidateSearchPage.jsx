@@ -126,7 +126,9 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
   const [pipelineBusy, setPipelineBusy] = useState(false);
   const [pipelineError, setPipelineError] = useState("");
   const [pipelineMessage, setPipelineMessage] = useState("");
-  const [rankedResultsPath, setRankedResultsPath] = useState("");
+  const [pipelineMaxCandidates, setPipelineMaxCandidates] = useState("100");
+  const [campaignArtifactStatus, setCampaignArtifactStatus] = useState({});
+  const [campaignExportBusy, setCampaignExportBusy] = useState({});
   const autoImportedRunIdsRef = useRef(new Set());
 
   const activeCampaigns = useMemo(
@@ -192,6 +194,81 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
     () => pipelineRuns.some((run) => run.status === "Running"),
     [pipelineRuns]
   );
+
+  const getArtifactStatus = (campaignId) => {
+    const key = String(campaignId || "");
+    return (
+      campaignArtifactStatus[key] || {
+        checking: false,
+        searchResultsExists: false,
+        searchResultsFileCount: 0,
+        searchResultsTotalCandidates: 0,
+        rankedResultsExists: false,
+      }
+    );
+  };
+
+  const refreshArtifactStatuses = async (campaignIds) => {
+    const normalizedIds = [...new Set((campaignIds || []).map((id) => String(id)).filter(Boolean))];
+    if (normalizedIds.length === 0) {
+      return;
+    }
+
+    setCampaignArtifactStatus((prev) => {
+      const next = { ...prev };
+      normalizedIds.forEach((id) => {
+        next[id] = {
+          ...(next[id] || {}),
+          checking: true,
+        };
+      });
+      return next;
+    });
+
+    const updates = await Promise.all(
+      normalizedIds.map(async (id) => {
+        try {
+          const [rankedStatus, searchStatus] = await Promise.all([
+            campaignApi.getRankedResultsStatus(id),
+            campaignApi.getSearchResultsStatus(id),
+          ]);
+
+          return [
+            id,
+            {
+              checking: false,
+              rankedResultsExists: Boolean(rankedStatus?.exists),
+              searchResultsExists: Boolean(searchStatus?.exists),
+              searchResultsFileCount: Number(searchStatus?.file_count || 0),
+              searchResultsTotalCandidates: Number(searchStatus?.total_candidates || 0),
+            },
+          ];
+        } catch {
+          return [
+            id,
+            {
+              checking: false,
+              rankedResultsExists: false,
+              searchResultsExists: false,
+              searchResultsFileCount: 0,
+              searchResultsTotalCandidates: 0,
+            },
+          ];
+        }
+      })
+    );
+
+    setCampaignArtifactStatus((prev) => {
+      const next = { ...prev };
+      updates.forEach(([id, status]) => {
+        next[id] = {
+          ...(next[id] || {}),
+          ...status,
+        };
+      });
+      return next;
+    });
+  };
 
   useEffect(() => {
     if (!dashboardCampaignId && activeCampaigns.length > 0) {
@@ -315,6 +392,7 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
 
         loadCandidates().catch(() => {});
         loadCampaigns().catch(() => {});
+        refreshArtifactStatuses([pipelineCampaignId]).catch(() => {});
       }
     };
 
@@ -335,6 +413,15 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
       eventSource.close();
     };
   }, [pipelineCampaignId, loadCampaigns, loadCandidates]);
+
+  useEffect(() => {
+    if (campaigns.length === 0) {
+      setCampaignArtifactStatus({});
+      return;
+    }
+
+    refreshArtifactStatuses(campaigns.map((campaign) => campaign.id)).catch(() => {});
+  }, [campaigns]);
 
   const openCreateCampaign = () => {
     setCreateError("");
@@ -497,13 +584,23 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
       return;
     }
 
+    const parsedMax = Number.parseInt(pipelineMaxCandidates, 10);
+    if (!Number.isFinite(parsedMax) || parsedMax < 1 || parsedMax > 100) {
+      setPipelineError("Max candidates must be between 1 and 100.");
+      return;
+    }
+
     setPipelineError("");
     setPipelineMessage("");
     setPipelineBusy(true);
     try {
-      const response = await campaignApi.runPipeline(pipelineCampaignId, runType);
+      const response = await campaignApi.runPipeline(
+        pipelineCampaignId,
+        runType,
+        parsedMax
+      );
       setPipelineMessage(
-        `Pipeline started (run #${response.run_id}). Please wait while it is running.`
+        `Pipeline started (run #${response.run_id}) with max_candidates=${parsedMax}. Please wait while it is running.`
       );
       const runs = await campaignApi.getPipelineRuns(pipelineCampaignId);
       setPipelineRuns(Array.isArray(runs) ? runs : []);
@@ -514,39 +611,112 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
     }
   };
 
-  const importRankedResults = async () => {
-    if (!pipelineCampaignId) {
-      setPipelineError("Select a campaign first.");
+  const exportSearchCsv = async (campaignId) => {
+    if (!campaignId) {
+      setApiError("Select a campaign first.");
       return;
     }
 
-    setPipelineError("");
-    setPipelineMessage("");
-    setPipelineBusy(true);
-    try {
-      const response = await campaignApi.importRankedResults(
-        pipelineCampaignId,
-        rankedResultsPath.trim()
-      );
-
-      setPipelineMessage(
-        `Import completed. Created ${response.created_candidates}, updated ${response.updated_candidates}, linked ${response.linked_to_campaign}.`
-      );
-
-      const [runs, rankingItems] = await Promise.all([
-        campaignApi.getPipelineRuns(pipelineCampaignId),
-        campaignApi.getRankings(pipelineCampaignId),
-        loadCampaigns(),
-        loadCandidates(),
-      ]);
-      setPipelineRuns(Array.isArray(runs) ? runs : []);
-      setRankings(Array.isArray(rankingItems) ? rankingItems : []);
-      setView("dashboard");
-    } catch (error) {
-      setPipelineError(error.message);
-    } finally {
-      setPipelineBusy(false);
+    const artifactStatus = getArtifactStatus(campaignId);
+    if (!artifactStatus.searchResultsExists) {
+      setApiError("No search results found for export yet.");
+      return;
     }
+
+    const exportKey = `${campaignId}:search`;
+
+    setApiError("");
+    setCampaignExportBusy((prev) => ({
+      ...prev,
+      [exportKey]: true,
+    }));
+    try {
+      await campaignApi.exportSearchCsv(campaignId);
+    } catch (error) {
+      setApiError(error.message || "Search CSV export failed.");
+    } finally {
+      setCampaignExportBusy((prev) => ({
+        ...prev,
+        [exportKey]: false,
+      }));
+    }
+  };
+
+  const exportRankedCsv = async (campaignId) => {
+    if (!campaignId) {
+      setApiError("Select a campaign first.");
+      return;
+    }
+
+    const artifactStatus = getArtifactStatus(campaignId);
+    if (!artifactStatus.rankedResultsExists) {
+      setApiError("No ranked results file found for export yet.");
+      return;
+    }
+
+    const exportKey = `${campaignId}:ranked`;
+
+    setApiError("");
+    setCampaignExportBusy((prev) => ({
+      ...prev,
+      [exportKey]: true,
+    }));
+    try {
+      await campaignApi.exportRankedCsv(campaignId);
+    } catch (error) {
+      setApiError(error.message || "Ranked CSV export failed.");
+    } finally {
+      setCampaignExportBusy((prev) => ({
+        ...prev,
+        [exportKey]: false,
+      }));
+    }
+  };
+
+  const renderCampaignExportActions = (campaign) => {
+    const campaignId = campaign?.id;
+    const artifactStatus = getArtifactStatus(campaignId);
+    const searchBusy = Boolean(campaignExportBusy[`${campaignId}:search`]);
+    const rankedBusy = Boolean(campaignExportBusy[`${campaignId}:ranked`]);
+
+    return (
+      <>
+        <button
+          type="button"
+          onClick={() => exportSearchCsv(campaignId)}
+          disabled={
+            pipelineRunning ||
+            artifactStatus.checking ||
+            searchBusy ||
+            !artifactStatus.searchResultsExists
+          }
+          className="rounded-2xl border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 disabled:opacity-60"
+        >
+          {artifactStatus.checking
+            ? "Checking search..."
+            : searchBusy
+            ? "Exporting search CSV..."
+            : `Export Search CSV (${artifactStatus.searchResultsTotalCandidates})`}
+        </button>
+        <button
+          type="button"
+          onClick={() => exportRankedCsv(campaignId)}
+          disabled={
+            pipelineRunning ||
+            artifactStatus.checking ||
+            rankedBusy ||
+            !artifactStatus.rankedResultsExists
+          }
+          className="rounded-2xl border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 disabled:opacity-60"
+        >
+          {artifactStatus.checking
+            ? "Checking ranked..."
+            : rankedBusy
+            ? "Exporting ranked CSV..."
+            : "Export Ranked CSV"}
+        </button>
+      </>
+    );
   };
 
   const changeDashboardCampaign = (campaign) => {
@@ -702,6 +872,7 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
                   onOpenCampaign={changeDashboardCampaign}
                   onEditCampaign={openEditCampaign}
                   onDeleteCampaign={openDeleteCampaignModal}
+                  renderExtraActions={renderCampaignExportActions}
                 />
 
                 <div>
@@ -753,8 +924,16 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
                 </label>
 
                 {pipelineRunning && (
-                  <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-                    Pipeline is currently running. Please wait, timeline updates automatically.
+                  <div className="mt-4 rounded-2xl border border-amber-200 bg-gradient-to-r from-amber-50 to-orange-50 px-4 py-4">
+                    <div className="flex items-center gap-3">
+                      <div className="h-5 w-5 animate-spin rounded-full border-2 border-amber-700 border-t-transparent" />
+                      <div>
+                        <p className="text-sm font-semibold text-amber-900">Pipeline is running</p>
+                        <p className="text-xs text-amber-800">
+                          This can take a few minutes. Timeline updates automatically while processing.
+                        </p>
+                      </div>
+                    </div>
                   </div>
                 )}
 
@@ -770,6 +949,22 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
                   </div>
                 )}
 
+                <label className="mt-4 block text-sm">
+                  <span className="mb-1 block font-medium text-slate-700">Max candidates for filter + rank (1-100)</span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={100}
+                    value={pipelineMaxCandidates}
+                    placeholder="100"
+                    onChange={(event) => setPipelineMaxCandidates(event.target.value)}
+                    className="w-full rounded-2xl border border-slate-300 px-3 py-2.5 outline-none focus:border-orange-500"
+                  />
+                  <p className="mt-1 text-xs text-slate-500">
+                    This value is for the number of candidates to be shortlisted and ranked by the AI pipeline. The default is 100, but you can reduce it for faster runs.
+                  </p>
+                </label>
+
                 <div className="mt-4 flex flex-wrap gap-2">
                   <button
                     type="button"
@@ -777,7 +972,7 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
                     disabled={pipelineBusy || !pipelineCampaignId || pipelineRunning}
                     className="rounded-2xl bg-slate-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-60"
                   >
-                    {pipelineBusy ? "Working..." : "Run Pipeline"}
+                    {pipelineBusy ? "Working..." : "Run Campaign"}
                   </button>
 
                   <button
@@ -787,27 +982,6 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
                     className="rounded-2xl border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 disabled:opacity-60"
                   >
                     Run Rank Only
-                  </button>
-                </div>
-
-                <label className="mt-4 block text-sm">
-                  <span className="mb-1 block font-medium text-slate-700">Ranked Results Path (optional)</span>
-                  <input
-                    value={rankedResultsPath}
-                    onChange={(event) => setRankedResultsPath(event.target.value)}
-                    placeholder="candidate_pool/campaigns/<name>/data/ranked_results.json"
-                    className="w-full rounded-2xl border border-slate-300 px-3 py-2.5 outline-none focus:border-orange-500"
-                  />
-                </label>
-
-                <div className="mt-3 flex flex-wrap gap-2">
-                  <button
-                    type="button"
-                    onClick={importRankedResults}
-                    disabled={pipelineBusy || !pipelineCampaignId || pipelineRunning}
-                    className="rounded-2xl border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 disabled:opacity-60"
-                  >
-                    Import ranked_results.json
                   </button>
                 </div>
               </Card>
@@ -851,6 +1025,7 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
               onViewDetails={setSelectedCampaign}
               onEditCampaign={openEditCampaign}
               onDeleteCampaign={openDeleteCampaignModal}
+              renderExtraActions={renderCampaignExportActions}
             />
           )}
 
@@ -863,6 +1038,7 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
               onViewDetails={setSelectedCampaign}
               onEditCampaign={openEditCampaign}
               onDeleteCampaign={openDeleteCampaignModal}
+              renderExtraActions={renderCampaignExportActions}
             />
           )}
 
@@ -875,6 +1051,7 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
               onViewDetails={setSelectedCampaign}
               onEditCampaign={openEditCampaign}
               onDeleteCampaign={openDeleteCampaignModal}
+              renderExtraActions={renderCampaignExportActions}
             />
           )}
 

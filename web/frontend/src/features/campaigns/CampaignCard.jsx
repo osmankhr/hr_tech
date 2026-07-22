@@ -10,7 +10,7 @@ function MetricBox({ label, value }) {
   );
 }
 
-export function CampaignCard({ campaign, full, onOpen, onViewDetails, onEdit, onDelete }) {
+export function CampaignCard({ campaign, full, onOpen, onViewDetails, onEdit, onDelete, extraActions }) {
   return (
     <div
       role="button"
@@ -108,6 +108,15 @@ export function CampaignCard({ campaign, full, onOpen, onViewDetails, onEdit, on
               Delete
             </Button>
           )}
+        </div>
+      )}
+
+      {extraActions && (
+        <div
+          className="mt-3 flex flex-wrap gap-2"
+          onClick={(event) => event.stopPropagation()}
+        >
+          {extraActions}
         </div>
       )}
     </div>

@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useMemo, useState } from "react";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { Modal } from "../../components/ui/Modal";
@@ -8,12 +8,33 @@ import { CandidateActivityLog } from "./CandidateActivityLog";
 
 export function CandidateDetailModal({ candidate, onClose, onEdit }) {
   const [activeTab, setActiveTab] = useState("details");
+  const [selectedFeatureId, setSelectedFeatureId] = useState(null);
+
+  const featureAssessments = useMemo(() => {
+    const assessments = candidate?.ranking?.agent?.feature_assessments;
+    return Array.isArray(assessments) ? assessments : [];
+  }, [candidate]);
+
+  const assessmentsByFeatureId = useMemo(() => {
+    const byId = new Map();
+    featureAssessments.forEach((assessment) => {
+      if (assessment?.feature_id) {
+        byId.set(assessment.feature_id, assessment);
+      }
+    });
+    return byId;
+  }, [featureAssessments]);
+
+  const selectedFeatureAssessment = selectedFeatureId
+    ? assessmentsByFeatureId.get(selectedFeatureId) || null
+    : null;
 
   if (!candidate) return null;
 
   return (
-    <Modal title="Candidate Details" onClose={onClose}>
-      <div className="flex flex-col h-[75vh]">
+    <>
+      <Modal title="Candidate Details" onClose={onClose}>
+        <div className="flex flex-col h-[75vh]">
         {/* Header & Progress Bar */}
         <div className="shrink-0 border-b border-slate-100 pb-4 mb-4">
           <div className="flex justify-between items-start mb-4">
@@ -68,13 +89,41 @@ export function CandidateDetailModal({ candidate, onClose, onEdit }) {
                       Feature Contributions
                     </p>
                     <div className="grid gap-2">
-                      {Object.entries(candidate.ranking.feature_contributions || {}).map(([featureName, points]) => (
-                        <div key={featureName} className="flex items-center justify-between rounded-xl border border-slate-200 bg-white px-3 py-2 shadow-sm">
-                          <span className="text-sm font-medium text-slate-700">{featureName}</span>
-                          <span className="text-sm font-bold text-orange-600">{points}</span>
-                        </div>
-                      ))}
+                      {Object.entries(candidate.ranking.feature_contributions || {}).map(([featureName, weightedPoints]) => {
+                        const assessment = assessmentsByFeatureId.get(featureName);
+                        const weightedMax = getWeightedMaxPoints(
+                          candidate?.ranking?.manual,
+                          featureName,
+                          weightedPoints,
+                          assessment
+                        );
+                        const weightedScore = formatFeatureScore(weightedPoints, weightedMax);
+
+                        return (
+                          <button
+                            key={featureName}
+                            type="button"
+                            onClick={() => setSelectedFeatureId(featureName)}
+                            className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 shadow-sm transition-all hover:-translate-y-0.5 hover:border-orange-200 hover:shadow"
+                          >
+                            <div className="flex items-center justify-between gap-3">
+                              <span className="text-left text-sm font-medium text-slate-700">
+                                {humanizeFeatureName(featureName)}
+                              </span>
+                              <span className="rounded-full bg-orange-50 px-2.5 py-1 text-xs font-semibold text-orange-700">
+                                {weightedScore}
+                              </span>
+                            </div>
+                            <div className="mt-1 text-left text-xs text-slate-500">
+                              Weighted score out of max contribution
+                            </div>
+                          </button>
+                        );
+                      })}
                     </div>
+                    <p className="mt-2 text-xs text-slate-500">
+                      Click any feature to view evidence and notes.
+                    </p>
                   </div>
                 </div>
               )}
@@ -112,8 +161,67 @@ export function CandidateDetailModal({ candidate, onClose, onEdit }) {
             <CandidateActivityLog candidateId={candidate.id} />
           )}
         </div>
+        </div>
+      </Modal>
+
+      {selectedFeatureId && (
+        <Modal
+          title={`Feature Assessment: ${humanizeFeatureName(selectedFeatureId)}`}
+          onClose={() => setSelectedFeatureId(null)}
+          size="max-w-2xl"
+        >
+          <FeatureAssessmentContent
+            featureId={selectedFeatureId}
+            assessment={selectedFeatureAssessment}
+          />
+        </Modal>
+      )}
+    </>
+  );
+}
+
+function FeatureAssessmentContent({ featureId, assessment }) {
+  if (!assessment) {
+    return (
+      <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+        No assessment details found for {humanizeFeatureName(featureId)}.
       </div>
-    </Modal>
+    );
+  }
+
+  const evidences = Array.isArray(assessment.evidence) ? assessment.evidence : [];
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+        <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Score</p>
+        <p className="mt-1 text-base font-semibold text-slate-900">
+          {formatNumber(assessment.raw_points)} / {formatNumber(assessment.max_points)}
+        </p>
+      </div>
+
+      <div>
+        <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-500">Evidence</p>
+        <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3">
+          {evidences.length > 0 ? (
+            <ul className="list-disc space-y-2 pl-5 text-sm text-slate-700">
+              {evidences.map((item, index) => (
+                <li key={`${featureId}-evidence-${index}`}>{item}</li>
+              ))}
+            </ul>
+          ) : (
+            <p className="text-sm italic text-slate-400">No evidence provided.</p>
+          )}
+        </div>
+      </div>
+
+      <div>
+        <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-500">Notes</p>
+        <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-700">
+          {assessment.notes || <span className="italic text-slate-400">No notes provided.</span>}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -139,4 +247,63 @@ function Info({ label, value }) {
       <p className="font-medium text-slate-900">{value || "-"}</p>
     </div>
   );
+}
+
+function humanizeFeatureName(featureName = "") {
+  return String(featureName)
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function formatNumber(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return "-";
+  }
+
+  if (Number.isInteger(numeric)) {
+    return String(numeric);
+  }
+
+  return numeric.toFixed(2).replace(/\.00$/, "");
+}
+
+function formatFeatureScore(points, maxPoints) {
+  const current = formatNumber(points);
+  const max = formatNumber(maxPoints);
+
+  if (max === "-") {
+    return current;
+  }
+
+  return `${current}/${max}`;
+}
+
+function getWeightedMaxPoints(manualRanking, featureId, weightedPoints, assessment) {
+  const directWeight = Number(manualRanking?.feature_weights?.[featureId]);
+  if (Number.isFinite(directWeight) && directWeight > 0) {
+    return directWeight;
+  }
+
+  const rawPoints = Number(assessment?.raw_points);
+  const rawMax = Number(assessment?.max_points);
+  const contribution = Number(weightedPoints);
+
+  if (
+    Number.isFinite(rawPoints) &&
+    Number.isFinite(rawMax) &&
+    rawMax > 0 &&
+    Number.isFinite(contribution)
+  ) {
+    const ratio = rawPoints / rawMax;
+    if (ratio > 0) {
+      return roundToTwo(contribution / ratio);
+    }
+  }
+
+  return null;
+}
+
+function roundToTwo(value) {
+  return Math.round(value * 100) / 100;
 }

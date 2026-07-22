@@ -59,6 +59,7 @@ class ManualGrader:
             "manual_score": final_score,
             "category": category,
             "feature_contributions": contributions,
+            "feature_weights": self.weights,
             "gate_penalty": gate_penalty,
             "ai_adjustment": ai_adjustment,
             "triggered_gates": triggered_gates,
