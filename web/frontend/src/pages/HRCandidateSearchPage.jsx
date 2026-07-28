@@ -434,7 +434,9 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
 
       setDashboardCampaignId(String(campaignId));
       setPipelineCampaignId(String(campaignId));
-      setPipelineMessage("Campaign config saved. You can now run the pipeline.");
+      setPipelineMessage(
+        'Campaign config saved. Nothing is searched yet — click "Run Pipeline" below to find candidates.'
+      );
       setShowCreate(false);
       setView("pipeline");
     } catch (error) {
@@ -752,6 +754,13 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
                   </select>
                 </label>
 
+                {pipelineCampaignId && !pipelineRunning && pipelineRuns.length === 0 && (
+                  <div className="mt-4 rounded-2xl border-2 border-orange-400 bg-orange-50 px-4 py-3 text-sm font-medium text-orange-900">
+                    ⚠️ This campaign hasn't been searched yet — saving the config does not start
+                    the search. Click <strong>"Run Pipeline"</strong> below to find candidates.
+                  </div>
+                )}
+
                 {pipelineRunning && (
                   <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
                     Pipeline is currently running. Please wait, timeline updates automatically.
@@ -775,7 +784,11 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
                     type="button"
                     onClick={() => runPipeline("full")}
                     disabled={pipelineBusy || !pipelineCampaignId || pipelineRunning}
-                    className="rounded-2xl bg-slate-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-60"
+                    className={`rounded-2xl bg-slate-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-60 ${
+                      pipelineCampaignId && !pipelineRunning && pipelineRuns.length === 0
+                        ? "ring-4 ring-orange-300 animate-pulse"
+                        : ""
+                    }`}
                   >
                     {pipelineBusy ? "Working..." : "Run Pipeline"}
                   </button>
