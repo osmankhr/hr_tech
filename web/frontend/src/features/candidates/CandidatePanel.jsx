@@ -12,6 +12,7 @@ export function CandidatePanel({
   page,
   totalPages,
   onPageChange,
+  headerAction = null,
 }) {
   return (
     <div
@@ -28,7 +29,10 @@ export function CandidatePanel({
             <p className="text-sm text-slate-500">{subtitle}</p>
           </div>
 
-          <Icons.Users className="h-5 w-5 text-slate-400" />
+          <div className="flex items-center gap-3">
+            {headerAction}
+            <Icons.Users className="h-5 w-5 text-slate-400" />
+          </div>
         </div>
       )}
 

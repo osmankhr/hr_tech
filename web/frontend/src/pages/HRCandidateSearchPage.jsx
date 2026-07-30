@@ -721,6 +721,18 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
                       page={dashboardPage}
                       totalPages={dashboardTotalPages}
                       onPageChange={setDashboardPage}
+                      headerAction={
+                        selectedDashboardCampaign && dashboardCandidates.length > 0 ? (
+                          <a
+                            href={`${API_BASE_URL}/campaigns/${selectedDashboardCampaign.id}/export/excel?token=${encodeURIComponent(
+                              localStorage.getItem("hr_auth_token") || ""
+                            )}`}
+                            className="rounded-xl border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                          >
+                            Download Excel
+                          </a>
+                        ) : null
+                      }
                     />
                   )}
                 </div>

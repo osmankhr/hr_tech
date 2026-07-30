@@ -1,6 +1,6 @@
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Depends, Header, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from typing import Optional
 import sqlite3
@@ -1076,6 +1076,58 @@ def import_ranked_results(
         "updated_candidates": updated_count,
         "linked_to_campaign": linked_count,
     }
+
+
+@app.get("/api/campaigns/{campaign_id}/export/excel")
+def export_campaign_excel(
+    campaign_id: int,
+    token: Optional[str] = Query(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    if authorization and authorization.startswith("Bearer "):
+        raw_token = authorization.replace("Bearer ", "").strip()
+    elif token:
+        raw_token = token.strip()
+    else:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    current_user = _get_current_user_from_raw_token(raw_token)
+
+    conn = get_connection()
+
+    campaign = _get_owned_campaign(conn, campaign_id, current_user)
+    if not campaign:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    config_row = conn.execute("""
+        SELECT pipeline_dir
+        FROM pipeline_campaign_configs
+        WHERE campaign_id = ?
+    """, (campaign_id,)).fetchone()
+    conn.close()
+
+    if not config_row:
+        raise HTTPException(status_code=404, detail="Pipeline config not found for this campaign")
+
+    output_dir = Path(config_row["pipeline_dir"]) / "output"
+    xlsx_files = sorted(
+        output_dir.glob("shortlist_*.xlsx"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+
+    if not xlsx_files:
+        raise HTTPException(status_code=404, detail="No Excel export found. Run the pipeline first.")
+
+    latest = xlsx_files[0]
+    download_name = f"{campaign['campaign_code']}_candidates.xlsx"
+
+    return FileResponse(
+        path=latest,
+        filename=download_name,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
 
 
 @app.get("/api/campaigns/{campaign_id}/rankings")
