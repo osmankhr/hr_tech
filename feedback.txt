@@ -1,0 +1,96 @@
+Machine Learning Engineer (Kagan)
+Platformda kullanılan bazı terimler günlük recruitment terminolojimizle tam uyumlu değil. Recruiter deneyimini kolaylaştırmak için dilin işe alım ekiplerinin kullandığı terminolojiye yaklaştırılması faydalı olabilir.
+
+Aynı aramayı hem sadece Türkiye havuzu hem de global havuz için çalıştırdığımda, beklenenin aksine Türkiye havuzu daha fazla sonuç döndürdü. Lokasyon filtreleme mantığı tekrar gözden geçirilebilir.
+
+Arama kriterlerinde NLP gereksinimi olmamasına rağmen sistem NLP odaklı adayları öne çıkardı. İlgili etiketi manuel değiştirdiğimde daha uygun adaylarla karşılaştım. Arama niyetinin ve otomatik etiketleme mantığının iyileştirilmesi faydalı olabilir.
+
+Mümkünse arama sonuçlarının ATS/Tracker verileriyle zenginleştirilmesi çok değerli olur. Adayın daha önce hangi roller için değerlendirildiği, kaç kez süreç gördüğü ve elenme nedenleri gibi bilgilerin gösterilmesi recruiter verimliliğini artıracaktır.
+
+Sonuçlarda mevcut bir ING Hubs Türkiye çalışanı yer aldı. Bununla birlikte benzer profildeki diğer çalışanların görünmemesi dikkat çekiciydi. İç çalışanların nasıl ele alındığı ve eşleşme mantığı gözden geçirilebilir.
+Data & AI Chapter Lead Engineer (Kagan)
+Bu kullanım senaryosunda aradığımız rol ML  Chapter Lead pozisyonuydu. Ancak Chapter Lead rolüne ilişkin beklentilerimiz ve çalışma modelimiz piyasadaki benzer pozisyonlarla birebir örtüşmediği için, MLE pozisyonunda yaşadığımız zorluklara benzer şekilde burada da tam uyumlu adaylara ulaşmakta zorlandık.
+
+Öne çıkan gözlemlerim:
+
+Sistem tarafından en yüksek eşleşme oranına sahip aday olarak %89 uyum ile GS gösterildi. Ancak aday profiline yönlendiren bağlantı çalışmıyordu. Bunun sebebinin adayın tam adının GUS olması ve sistemin isim eşleştirmesinde yaşadığı bir problem olabileceğini düşünüyorum. Adayı manuel arama ile bulabildim.
+
+Profili incelediğimde adayın bir mühendislik geçmişine sahip olmadığını gördüm. Bu nedenle %89'luk uyum oranı beklediğimden yüksek göründü. Yine de adayı sürece dahil ederek değerlendireceğiz ve ilerleyen aşamalarda ek geri bildirim paylaşacağım.  Ugura gosterdim profili ona da kendisinden fazla GS'nin uyumlu olamasina profil  icerigi  temelli bir bias olursturmus gorunuyor olarak yorumda bulundu
+
+Sistem mevcut yöneticilerimizden bazılarını referans alarak aşağıdaki benzerlik oranlarını gösterdi:
+
+UU – %74
+MY – %50
+ES – %41
+OK – %38
+
+Buna karşın, bu rol için referans alınmasını bekleyebileceğimiz MC ve SM sonuçlarda yer almadı.
+
+Bu nedenle aşağıdaki noktaların daha iyi anlaşılabilmesi faydalı olacaktır:
+
+Benzerlik oranları hangi kriterlere göre hesaplanıyor?
+Unvan, yetkinlikler, deneyim alanları, organizasyonel veriler veya diğer faktörlerin ağırlıkları nelerdir?
+MC ve SM gibi ilgili profiller neden sonuçlarda yer almamıştır?
+
+
+Genel olarak araç faydalı bir başlangıç noktası sunuyor. Ancak özellikle benzerlik skorlarının nasıl hesaplandığına dair daha fazla şeffaflık sağlanması ve eşleşme mantığının daha anlaşılır hale getirilmesi, recruiter'ların sonuçlara olan güvenini ve aracı etkin kullanımını önemli ölçüde artıracaktır.
+GCP Data Engineer (Kagan)
+Tag Generation & Management
+
+NLP, LLM ve Python etiketleri rol içeriğinden bağımsız olarak varsayılan şekilde ekleniyor gibi görünüyor. Bu nedenle sonuçları doğru hale getirmek için manuel düzenleme yapmak gerekiyor.
+
+Manuel düzenleme sırasında ise sadece aşağıdaki sınırlı etiket listesi sunuluyor:
+
+A/B Testing
+LLM
+LLMOps
+MLE
+MLOps
+NLP
+Python
+Analytics
+
+Diger rollerde kritik olan birçok skill seçeneği bulunmuyor.Etiket havuzunun genişletilmesi faydalı olacaktır. Aksi halde kullanıcıların manuel olarak etiket yazması gerekecek ve bu durum typo kaynaklı arama kalitesini olumsuz etkileyebilir.
+
+Ayrıca sistemin, Job Description ve Filter Criteria içerisinde verilen bilgilerden ilgili etiketleri otomatik olarak oluşturmasını beklerdim. Kullanıcının sonradan manuel müdahale etmesi ihtiyacının minimum seviyede olması gerekir.
+
+Target Profiles Parameter
+
+"Target Profiles" sayısını artırıp azaltarak farklı denemeler yaptım ancak sonuç setinde anlamlı bir değişiklik gözlemleyemedim.
+Parametrenin arama algoritmasını nasıl etkilediği net görünmüyor. Daha fazla aday mı tarıyor, daha fazla aday mı döndürüyor yoksa sadece görüntülenen aday sayısını mı etkiliyor anlamak zor.
+Bu parametrenin etkisi daha belirgin hale getirilebilir veya kullanıcıya görünür bir açıklama sunulabilir.
+
+Example CV Usage
+
+Sisteme örnek CV ekleyerek de deneme yaptım.
+Ancak shortlist sonuçlarında örnek CV'nin anlamlı bir etkisini gözlemleyemedim.
+Özellikle CV yükleme özelliğinin aday sıralaması veya aday eşleşme skorlarına nasıl katkı sağladığı daha görünür hale getirilebilir.
+
+Shortlist Quality & Volume
+
+Bu testte kullanılan rol aslında piyasada aday bulunması nispeten kolay olan bir pozisyon.
+Bu nedenle diğer uzmanlaşmış veya niş rollere kıyasla daha fazla shortlist adayı üretilmesini beklerdim.
+Sonuç hacmi beklentimin altında kaldı.
+
+English Language Assessment Opportunity
+
+Dikkatimi çeken bir diğer konu, sistemin %90 uyumlu olarak değerlendirdiği adaylardan birinin geçmişte İngilizce seviyesinden dolayı elenmiş olmasıydı.
+
+Adayın üniversite bilgisi, başvuru sorularına verdiği cevaplar, CV içeriği ve LinkedIn profili incelendiğinde İngilizce seviyesine ilişkin bazı sinyaller bulunuyor.
+
+Gelecekte sistemin bu tür sinyalleri analiz ederek bir "English Language Confidence Score" veya benzeri bir değerlendirme üretebilmesi faydalı olabilir.
+
+Amaç kesin bir İngilizce seviyesi belirlemek değil, recruiter'a risk sinyali vermek olabilir.
+
+Örneğin:
+
+Profilin tamamen yerel dilde hazırlanmış olması veya Linkedin profillerinde yazan diller kisminda inglizcenin var olup olammais varsa hangi seviye yazilmis olmasi 
+LinkedIn profilinde İngilizce içerik bulunmaması,
+Başvuru sorularında inglizce sorusuna verdigi cevap 
+Uluslararası çalışma veya eğitim geçmişinin bulunmaması
+
+gibi detaylar değerlendirilerek "Low / Medium / High English Confidence" şeklinde bir gösterim sunulabilir ve benzerlik derecelendirilmesine eklene bilir
+Chapter Lead Solution Architect (emine)
+Ilk aramada kriterlere gore 15 aday cikarabildi. ING Turkiye tarafindan adaylar fazlaydi. Search kriterine "guncel sikreti ING olmayan" diye bir madde girmek mantikli olacak. Halihazirda ING Hubs Turkiye calisanlari da cikiyor. Ilk sayfada adaylar kuvvetli. Sonlara dogru alaka duzeyi azaliyor.  Promptu degistirerek ikinci bir search daha olusturdum. Oraya aktifte INGde calismayan seklinde prompt koydum ve kriterleri biraz daha sadelestirdim. Ulastigim aday sayisi artti
+Devops Engineer (emine)
+aday cikarmasi zaman aliyor. icerisine girip guncelleme yapmak istedigimde kritik bir degisiklik yapamiyorum
