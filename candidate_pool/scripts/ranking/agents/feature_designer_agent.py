@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 from .agent_base import JsonAgent
 from ..prompt_store import PromptStore
 from ..utils.json_utils import ensure_list
+
+logger = logging.getLogger(__name__)
 
 
 class FeatureDesignerAgent(JsonAgent):
@@ -28,7 +31,7 @@ class FeatureDesignerAgent(JsonAgent):
             max_features=max_features,
         )
 
-        obj = self.call_json(system=system, user=user) or {}
+        obj = self.call_json(system=system, user=user, retries=1) or {}
         features = ensure_list(obj.get("features"))
         capabilities = ensure_list(obj.get("capabilities"))
 
@@ -59,23 +62,36 @@ class FeatureDesignerAgent(JsonAgent):
                 }
             )
 
-        if not cleaned:
+        used_fallback = not cleaned
+        if used_fallback:
+            logger.error(
+                "Feature designer got no usable features from the model after retries — "
+                "using a role-agnostic fallback schema instead of role-specific features. "
+                "This campaign's job description/filter criteria could not be scored on "
+                "role-specific skills; re-run to retry the AI design step."
+            )
+            # Deliberately role-agnostic: this fires when the model call/parse failed, so we
+            # have no signal about what the role actually needs. A previous version hardcoded
+            # NLP/LLM/Python-flavored features here, which silently biased every campaign's
+            # scoring toward NLP candidates whenever this fallback triggered (reported by
+            # recruiters as candidates being scored/tagged for skills the role never asked for).
             cleaned = [
                 {
-                    "id": "nlp_llm_depth",
-                    "name": "NLP/LLM Depth",
-                    "description": "Depth of practical NLP/LLM work.",
-                    "reason": "Core requirement for the role.",
+                    "id": "criteria_match",
+                    "name": "Filter Criteria Match",
+                    "description": "How well the candidate matches the stated filter criteria.",
+                    "reason": "Fallback feature — the AI feature-design step failed, so scoring "
+                              "falls back to the raw filter criteria instead of role-derived skills.",
                     "value_type": "numeric",
                     "max_points": 25,
-                    "extraction_logic": ["NLP", "LLM", "BERT", "GPT", "RAG", "NER"],
+                    "extraction_logic": ["See filter_criteria.md for this campaign"],
                     "evidence_examples": [],
                 },
                 {
                     "id": "seniority",
                     "name": "Seniority",
                     "description": "Role seniority and years of experience.",
-                    "reason": "Role targets senior engineers.",
+                    "reason": "Generic signal, independent of role specialization.",
                     "value_type": "numeric",
                     "max_points": 20,
                     "extraction_logic": ["Total Experience", "Senior", "Lead", "Principal", "Staff"],
@@ -88,4 +104,5 @@ class FeatureDesignerAgent(JsonAgent):
             "features": cleaned[:max_features],
             "notes": ensure_list(obj.get("notes")),
             "raw_response": obj,
+            "fallback": used_fallback,
         }

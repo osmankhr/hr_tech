@@ -24,7 +24,7 @@ class RankingPipeline:
 
         self.model = self.rank_cfg.get(
             "model",
-            config.get("filter", {}).get("model", "claude-sonnet-4-5"),
+            config.get("filter", {}).get("model", "claude-sonnet-5"),
         )
         self.max_features = int(self.rank_cfg.get("max_features", 10))
         self.max_candidates = int(self.rank_cfg.get("max_candidates", 1000))
@@ -191,8 +191,15 @@ class RankingPipeline:
         if self.feature_schema_path.exists() and not self.force_redesign:
             with open(self.feature_schema_path) as f:
                 schema = json.load(f)
-            logger.info("Loaded cached feature schema: %s", self.feature_schema_path)
-            return schema
+            if schema.get("fallback"):
+                logger.warning(
+                    "Cached feature schema at %s is a fallback (AI design previously failed) — "
+                    "re-running feature design instead of reusing it.",
+                    self.feature_schema_path,
+                )
+            else:
+                logger.info("Loaded cached feature schema: %s", self.feature_schema_path)
+                return schema
 
         schema = self.feature_agent.design(
             job_description=job_description,
@@ -200,9 +207,18 @@ class RankingPipeline:
             max_features=self.max_features,
         )
         self.feature_schema_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(self.feature_schema_path, "w") as f:
-            json.dump(schema, f, indent=2, ensure_ascii=False)
-        logger.info("Generated feature schema: %s", self.feature_schema_path)
+        if schema.get("fallback"):
+            # Don't cache a fallback schema — caching would silently lock this campaign into
+            # generic scoring forever. Leave the path unwritten so the next run retries design.
+            logger.warning(
+                "Feature design fell back to the generic schema; not caching it to %s so the "
+                "next run retries AI-driven design.",
+                self.feature_schema_path,
+            )
+        else:
+            with open(self.feature_schema_path, "w") as f:
+                json.dump(schema, f, indent=2, ensure_ascii=False)
+            logger.info("Generated feature schema: %s", self.feature_schema_path)
         return schema
 
     def _load_or_build_scoring_policy(

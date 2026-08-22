@@ -32,12 +32,25 @@ Data Engineer roles), Emine (Chapter Lead Solution Architect, DevOps Engineer ro
       real case.
       — Data & AI Chapter Lead feedback (Kagan)
 
-- [ ] **Auto-tagging applies NLP/LLM/Python tags independent of role content.** Confirmed on two
+- [x] **Auto-tagging applies NLP/LLM/Python tags independent of role content.** ~~Confirmed on two
       separate roles (Chapter Lead, GCP Data Engineer) — tags get attached regardless of whether
       the job description or filter criteria actually call for them, forcing manual correction
-      every time. This is the same root cause behind two other complaints below (search prioritizing
-      NLP-tagged candidates when NLP wasn't requested; recruiters having to hand-edit tags per
-      campaign). Worth fixing once, centrally, rather than per-symptom.
+      every time.~~ **Root cause found and fixed (2026-08-22).** `feature_designer_agent.py` had a
+      hardcoded fallback schema — "NLP/LLM Depth" (25 pts, keyed on NLP/LLM/BERT/GPT/RAG/NER) plus
+      "Seniority" — that silently kicked in whenever the AI feature-design call failed or returned
+      unparseable JSON (any transient timeout/rate-limit/malformed-output). Because
+      `_load_or_build_feature_schema` in `pipeline.py` caches whatever schema comes back to disk and
+      reuses it for every candidate in that campaign, a single failed call permanently locked the
+      *entire* campaign into NLP-biased scoring — exactly matching "NLP-heavy candidates surfaced
+      with no NLP requirement" and "NLP/LLM/Python tags added regardless of role content."
+      Fix: (1) `JsonAgent.call_json` now retries once before giving up, cutting how often the
+      fallback fires at all; (2) the fallback itself is now role-agnostic ("Filter Criteria Match" +
+      "Seniority", no hardcoded NLP/LLM keywords) and self-flagged (`fallback: true`); (3)
+      `pipeline.py` no longer caches a fallback schema to disk, so the next run retries proper
+      AI-driven design instead of being stuck. Verified with mocked-failure/mocked-recovery/caching
+      unit tests (see commit). Still open: still no first-class control over the manual tag
+      taxonomy itself (see "Tag taxonomy is too narrow" below) — this fix addresses the
+      *auto*-tagging bias, not the manual tag list.
       — MLE feedback (Kagan): searched with no NLP requirement, got NLP-heavy candidates by default;
         manually changing the tag surfaced better-fitting candidates.
       — GCP Data Engineer feedback (Kagan): "NLP, LLM, and Python tags seem to get added by default
@@ -148,7 +161,7 @@ Data Engineer roles), Emine (Chapter Lead Solution Architect, DevOps Engineer ro
 
 ## Suggested priority for next iteration
 
-1. Auto-tagging fix (root cause behind three separate complaints above)
+1. ~~Auto-tagging fix~~ — done 2026-08-22.
 2. Location filter bug (Turkey vs. global count inversion — concrete, reproducible)
 3. Exclude-current-ING-employee filter (clear, scoped ask; workaround already found via prompt)
 4. Similarity score transparency + investigate the MC/SM exclusion case specifically
