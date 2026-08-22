@@ -111,12 +111,32 @@ Data Engineer roles), Emine (Chapter Lead Solution Architect, DevOps Engineer ro
 
 ## Data quality / enrichment requests
 
-- [ ] **No way to exclude current ING employees from external search results.** ING Hubs Türkiye
-      employees keep showing up in results without a clear filter to exclude them. Add a search
-      criterion like "exclude current ING employer" (phrased in feedback as "güncel şirketi ING
-      olmayan"). One reviewer worked around this by adding "not currently at ING" directly into the
-      free-text prompt and got a larger, cleaner result set — suggests the underlying filtering
-      capability exists via prompt but isn't exposed as a first-class filter.
+- [x] **No way to exclude current ING employees from external search results.** ~~ING Hubs Türkiye
+      employees keep showing up in results without a clear filter to exclude them.~~ **Fixed
+      2026-08-22, at the AI-review stage (`filter.py`), which is where it was actually missing.**
+      `generate_queries.py` already told the model to bake a "not working at ING" phrase into every
+      *search query* — but that's just a soft hint to Exa's search ranking; nothing downstream ever
+      actually checked whether a returned candidate currently works at ING before accepting them,
+      which is exactly why Hubs employees kept slipping through despite the query-level hint.
+      Added two layers at the point candidates get ACCEPT/REJECT/PENDING decided:
+      1. The AI reviewer now also extracts `candidate_current_employer` from the actual profile
+         text and is instructed with a standing hard rule (independent of each campaign's own
+         filter criteria): if the real current employer is ING or a clear ING entity (ING Bank, ING
+         Hubs, ING Groep, ING Direct, etc.), always REJECT.
+      2. A deterministic regex backstop (`\bing\b`, whole-word match on the extracted employer
+         field only) overrides the recommendation to REJECT even if the model's own judgment missed
+         it — this is the actual fix for "the search criteria say don't match ING but it still let
+         them through," since it no longer depends on the model reliably applying the rule every
+         single time.
+      Verified: false-positive check against employers merely *containing* the letters "ing"
+      (Consulting, Engineering, Marketing, Banking, Boeing, Springer) — none flagged; true-positive
+      check against ING/ING Bank/ING Hubs/ING Hubs Türkiye/ING Groep/ING Direct/ING Türkiye (mixed
+      case) — all flagged; end-to-end test where the model itself mistakenly said ACCEPT for an
+      "ING Hubs Türkiye" employee — backstop overrode it to REJECT; end-to-end test with a real
+      external employer containing "ing" (Accenture Consulting) — stayed ACCEPT, no false positive.
+      Not addressed by this fix: this only helps *future* pipeline runs — it doesn't retroactively
+      re-score candidates already sitting in `filtered_results.json`/`ranked_results.json` for
+      existing campaigns; re-run the filter step on a campaign to apply it there.
       — Chapter Lead Solution Architect feedback (Emine): 15 candidates on first pass, many were
         existing ING Hubs Türkiye staff; rephrasing the prompt to exclude active ING employees and
         simplifying criteria increased usable candidate count.
@@ -181,7 +201,7 @@ Data Engineer roles), Emine (Chapter Lead Solution Architect, DevOps Engineer ro
 
 1. ~~Auto-tagging fix~~ — done 2026-08-22.
 2. ~~Location filter bug (Turkey vs. global count inversion)~~ — done 2026-08-22.
-3. Exclude-current-ING-employee filter (clear, scoped ask; workaround already found via prompt)
+3. ~~Exclude-current-ING-employee filter~~ — done 2026-08-22.
 4. Similarity score transparency + investigate the MC/SM exclusion case specifically
 5. Name-matching bug (GS/GUS profile link) — likely narrow fix, but breaks trust when it happens
 6. Everything else (tag taxonomy expansion, ATS enrichment, English confidence score, target

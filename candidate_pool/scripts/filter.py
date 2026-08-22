@@ -28,10 +28,11 @@ _PROMPT_TEMPLATE = """\
 
 ## Instructions
 
-First, determine the candidate's real current location and real current job title strictly \
-from the profile text/highlights above (ignore any "location" value already attached to the \
-profile — that value reflects which search bucket the record was pulled from, not a verified fact). \
-If the profile text does not state a location or title clearly, use null.
+First, determine the candidate's real current location, real current job title, and real \
+current employer strictly from the profile text/highlights above (ignore any "location" value \
+already attached to the profile — that value reflects which search bucket the record was pulled \
+from, not a verified fact). If the profile text does not state a location, title, or employer \
+clearly, use null.
 
 If the Filtering Criteria include a location requirement, treat it as a hard requirement: only \
 recommend ACCEPT when the candidate's real location (as you just determined it) clearly satisfies \
@@ -39,17 +40,40 @@ it. If the real location clearly does not satisfy it, recommend REJECT and say s
 If the location cannot be determined from the profile text, recommend PENDING (not ACCEPT) so a \
 human can verify.
 
+Standing hard rule, independent of the Filtering Criteria above: this search is run by ING \
+recruiters to find candidates from OUTSIDE the company, so a candidate whose real current \
+employer is ING or a clear ING entity (e.g. "ING Bank", "ING Hubs", "ING Hubs Türkiye/Turkey", \
+"ING Groep", "ING Direct", or any other obvious ING subsidiary/brand — not just companies whose \
+name happens to contain the letters "ing", like consulting or engineering firms) must always be \
+recommended REJECT, with main_concern noting the candidate currently works at ING. This applies \
+even if the candidate otherwise matches the role well.
+
 Evaluate this candidate and return a JSON object with exactly these fields:
 {{
   "recommendation": "ACCEPT" | "REJECT" | "PENDING",
   "confidence": "HIGH" | "MEDIUM" | "LOW",
   "candidate_location": "<candidate's real current location as stated in their profile text, or null>",
   "candidate_job_title": "<candidate's real current job title as stated in their profile text, or null>",
+  "candidate_current_employer": "<candidate's real current employer as stated in their profile text, or null>",
   "key_strength": "<one sentence describing the strongest qualification>",
   "main_concern": "<one sentence describing the main gap, or null if none>",
   "reasoning": "<2-3 sentence explanation of the decision>"
 }}
 """
+
+_ING_EMPLOYER_PATTERN = re.compile(r"\bing\b", re.IGNORECASE)
+
+
+def _is_ing_employer(employer: str | None) -> bool:
+    """Detect ING/ING-entity employers via a whole-word match on 'ING'.
+
+    Word-boundary matching avoids false positives on unrelated words that merely
+    contain the letters "ing" (consulting, engineering, marketing, banking, ...),
+    since "ing" never appears as its own word inside those.
+    """
+    if not employer:
+        return False
+    return bool(_ING_EMPLOYER_PATTERN.search(employer))
 
 
 def _extract_json(text: str) -> dict[str, Any] | None:
@@ -109,6 +133,7 @@ class CandidateFilter:
                 "confidence": "LOW",
                 "candidate_location": None,
                 "candidate_job_title": None,
+                "candidate_current_employer": None,
                 "key_strength": None,
                 "main_concern": "AI review failed — manual review required",
                 "reasoning": "Model call failed or returned unparseable output.",
@@ -116,11 +141,22 @@ class CandidateFilter:
 
         extracted_location = review.get("candidate_location")
         extracted_title = review.get("candidate_job_title")
+        extracted_employer = review.get("candidate_current_employer")
+
+        # Deterministic backstop: even if the model's own reasoning missed the standing
+        # ING-exclusion rule above, don't let a current ING employee through as ACCEPT/PENDING.
+        if _is_ing_employer(extracted_employer) and review.get("recommendation") != "REJECT":
+            review = {
+                **review,
+                "recommendation": "REJECT",
+                "main_concern": f"Candidate's current employer ({extracted_employer}) appears to be ING.",
+            }
 
         return {
             **candidate,
             "location": extracted_location or candidate.get("location") or "",
             "extracted_title": extracted_title or "",
+            "extracted_employer": extracted_employer or "",
             "ai_review": review,
         }
 
