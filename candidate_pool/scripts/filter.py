@@ -48,6 +48,17 @@ name happens to contain the letters "ing", like consulting or engineering firms)
 recommended REJECT, with main_concern noting the candidate currently works at ING. This applies \
 even if the candidate otherwise matches the role well.
 
+Also assess an English Language Confidence signal — a SOFT risk signal only, never a reason by \
+itself to REJECT or lower confidence. Base it strictly on what's observable in the profile: \
+whether the profile text itself is written in English vs. entirely in another language, explicit \
+mentions of English proficiency/certifications (e.g. IELTS/TOEFL scores, "fluent in English"), \
+and any international study or work history (foreign university, employer headquartered abroad, \
+international team). Rate "HIGH" when there's clear positive evidence (profile itself in fluent \
+English, explicit certification/fluency claim, or international study/work history), "LOW" when \
+the profile is entirely in another language with no English or international signals at all, and \
+"MEDIUM" when signals are mixed or absent either way (absence of evidence is not evidence of low \
+English — default to MEDIUM, not LOW, when you simply don't know).
+
 Evaluate this candidate and return a JSON object with exactly these fields:
 {{
   "recommendation": "ACCEPT" | "REJECT" | "PENDING",
@@ -55,6 +66,8 @@ Evaluate this candidate and return a JSON object with exactly these fields:
   "candidate_location": "<candidate's real current location as stated in their profile text, or null>",
   "candidate_job_title": "<candidate's real current job title as stated in their profile text, or null>",
   "candidate_current_employer": "<candidate's real current employer as stated in their profile text, or null>",
+  "english_confidence": "HIGH" | "MEDIUM" | "LOW",
+  "english_confidence_reason": "<one short phrase citing the specific evidence observed, e.g. 'profile written in English, mentions international MBA'>",
   "key_strength": "<one sentence describing the strongest qualification>",
   "main_concern": "<one sentence describing the main gap, or null if none>",
   "reasoning": "<2-3 sentence explanation of the decision>"
@@ -134,6 +147,8 @@ class CandidateFilter:
                 "candidate_location": None,
                 "candidate_job_title": None,
                 "candidate_current_employer": None,
+                "english_confidence": "MEDIUM",
+                "english_confidence_reason": None,
                 "key_strength": None,
                 "main_concern": "AI review failed — manual review required",
                 "reasoning": "Model call failed or returned unparseable output.",
@@ -142,6 +157,9 @@ class CandidateFilter:
         extracted_location = review.get("candidate_location")
         extracted_title = review.get("candidate_job_title")
         extracted_employer = review.get("candidate_current_employer")
+        english_confidence = str(review.get("english_confidence") or "MEDIUM").upper()
+        if english_confidence not in {"LOW", "MEDIUM", "HIGH"}:
+            english_confidence = "MEDIUM"
 
         # Deterministic backstop: even if the model's own reasoning missed the standing
         # ING-exclusion rule above, don't let a current ING employee through as ACCEPT/PENDING.
@@ -157,6 +175,8 @@ class CandidateFilter:
             "location": extracted_location or candidate.get("location") or "",
             "extracted_title": extracted_title or "",
             "extracted_employer": extracted_employer or "",
+            "english_confidence": english_confidence,
+            "english_confidence_reason": str(review.get("english_confidence_reason") or ""),
             "ai_review": review,
         }
 

@@ -86,6 +86,23 @@ export function CandidateDetailModal({ candidate, scoringExplainer, onClose, onE
                 <Info label="Last Updated" value={candidate.lastUpdated || candidate.last_updated} />
               </div>
 
+              {(candidate.englishConfidence || candidate.english_confidence) && (
+                <div className="rounded-2xl bg-slate-50 border border-slate-100 p-3 shadow-sm flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">
+                      English Confidence
+                    </p>
+                    <p className="text-xs text-slate-500">
+                      {candidate.englishConfidenceReason || candidate.english_confidence_reason ||
+                        "Soft signal — not a hard filter, no direct impact on match score."}
+                    </p>
+                  </div>
+                  <EnglishConfidenceBadge
+                    value={candidate.englishConfidence || candidate.english_confidence}
+                  />
+                </div>
+              )}
+
               {candidate.ranking && (
                 <div className="bg-slate-50 rounded-2xl p-4 border border-slate-100 shadow-sm">
                   <p className="mb-3 font-semibold text-slate-800">Explainable Score</p>
@@ -292,6 +309,11 @@ function TabButton({ active, onClick, children }) {
       {children}
     </button>
   );
+}
+
+function EnglishConfidenceBadge({ value }) {
+  const tone = { HIGH: "green", MEDIUM: "amber", LOW: "red" }[String(value).toUpperCase()] || "gray";
+  return <Badge tone={tone}>{String(value).toUpperCase()}</Badge>;
 }
 
 function Info({ label, value }) {

@@ -10,10 +10,12 @@ import json
 import csv
 import io
 import re
+import logging
 import subprocess
 import threading
 import time
-from datetime import datetime, timezone 
+import yaml
+from datetime import datetime, timezone
 from pathlib import Path
 from auth_utils import (
     hash_password,
@@ -34,6 +36,8 @@ FRONTEND_DIST = BACKEND_DIR.parent / "frontend" / "dist"
 MAX_WORKERS_CAP = 20
 
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="HR Candidate Search API")
 
@@ -197,11 +201,50 @@ def ensure_pipeline_tables():
     for alter_sql in [
         "ALTER TABLE pipeline_runs ADD COLUMN accepted_candidates INTEGER",
         "ALTER TABLE pipeline_runs ADD COLUMN ranked_candidates INTEGER",
+        "ALTER TABLE candidates ADD COLUMN english_confidence TEXT",
+        "ALTER TABLE candidates ADD COLUMN english_confidence_reason TEXT",
     ]:
         try:
             conn.execute(alter_sql)
         except sqlite3.OperationalError:
             pass
+
+    # candidate_profile_summary is a VIEW with a fixed column list baked in at CREATE time —
+    # unlike a table, it doesn't pick up new candidates columns automatically, so it has to be
+    # dropped and recreated whenever a column is added to candidates that the view should expose.
+    conn.executescript("""
+        DROP VIEW IF EXISTS candidate_profile_summary;
+
+        CREATE VIEW candidate_profile_summary AS
+        SELECT
+            cand.id,
+            cand.candidate_code,
+            cand.full_name,
+            cand.email,
+            cand.current_title,
+            cand.location,
+            cand.source,
+            cand.profile_url,
+            cand.score,
+            cand.status,
+            cand.years_experience,
+            cand.english_confidence,
+            cand.english_confidence_reason,
+            cand.last_updated,
+            cand.notes,
+            cand.first_contacted_at,
+            cu.full_name AS created_by_name,
+            uu.full_name AS updated_by_name,
+            fu.full_name AS first_contacted_by_name,
+            GROUP_CONCAT(DISTINCT s.name) AS skills
+        FROM candidates cand
+        LEFT JOIN users cu ON cu.id = cand.created_by_user_id
+        LEFT JOIN users uu ON uu.id = cand.updated_by_user_id
+        LEFT JOIN users fu ON fu.id = cand.first_contacted_by_user_id
+        LEFT JOIN candidate_skills cs ON cs.candidate_id = cand.id
+        LEFT JOIN skills s ON s.id = cs.skill_id
+        GROUP BY cand.id;
+    """)
 
     conn.commit()
     conn.close()
@@ -247,7 +290,7 @@ def _build_location_filter_clause(locations):
     return "\n".join(lines)
 
 
-def _build_campaign_yaml(name: str, description: str, locations):
+def _build_campaign_yaml(name: str, description: str, locations, max_candidates: int = 40):
     lines = [
         f"name: {json.dumps(name, ensure_ascii=False)}",
         f"description: {json.dumps(description, ensure_ascii=False)}",
@@ -278,7 +321,7 @@ def _build_campaign_yaml(name: str, description: str, locations):
         "  model: claude-sonnet-5",
         "",
         "filter:",
-        "  max_candidates: 40",
+        f"  max_candidates: {int(max_candidates)}",
         "  model: claude-sonnet-5",
         "",
         "ranking:",
@@ -570,6 +613,13 @@ def setup_pipeline_campaign(
         conn.close()
         raise HTTPException(status_code=404, detail="Campaign not found")
 
+    campaign_extra = conn.execute(
+        "SELECT target_profiles, sample_cv_filename FROM campaigns WHERE id = ?",
+        (campaign_id,),
+    ).fetchone()
+    target_profiles = (campaign_extra["target_profiles"] if campaign_extra else None) or 40
+    sample_cv_filename = campaign_extra["sample_cv_filename"] if campaign_extra else None
+
     try:
         parsed_locations = json.loads(locations_json)
     except json.JSONDecodeError:
@@ -612,7 +662,7 @@ def setup_pipeline_campaign(
     filter_criteria_path = input_dir / "filter_criteria.md"
 
     campaign_yaml_path.write_text(
-        _build_campaign_yaml(pipeline_name, pipeline_description, cleaned_locations),
+        _build_campaign_yaml(pipeline_name, pipeline_description, cleaned_locations, max_candidates=target_profiles),
         encoding="utf-8",
     )
     job_description_path.write_text(job_description, encoding="utf-8")
@@ -622,6 +672,17 @@ def setup_pipeline_campaign(
         f"{location_clause}\n{filter_criteria}" if location_clause else filter_criteria
     )
     filter_criteria_path.write_text(full_filter_criteria, encoding="utf-8")
+
+    # Sample CV (if uploaded on the campaign) never reached the search pipeline before —
+    # generate_queries.py only reads PDFs from input/seed_cvs/, but the upload endpoint only
+    # ever saved the file to a generic uploads folder and stored its filename on the campaign
+    # row. Copy it into this pipeline's seed_cvs folder so query generation actually uses it.
+    if sample_cv_filename:
+        source_cv_path = UPLOAD_DIR / sample_cv_filename
+        if source_cv_path.exists():
+            seed_cv_dir = input_dir / "seed_cvs"
+            seed_cv_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source_cv_path, seed_cv_dir / source_cv_path.name)
 
     now = utc_now()
     conn.execute("""
@@ -984,6 +1045,8 @@ def import_ranked_results(
             location = str(item.get("location") or "").strip()
             recommendation = str((item.get("ai_review") or {}).get("recommendation") or "PENDING").upper()
             candidate_status = _candidate_status_from_review(recommendation)
+            english_confidence = str(item.get("english_confidence") or "").strip().upper() or None
+            english_confidence_reason = str(item.get("english_confidence_reason") or "").strip() or None
 
             manual = (item.get("ranking") or {}).get("manual") or {}
             agent = (item.get("ranking") or {}).get("agent") or {}
@@ -1025,6 +1088,8 @@ def import_ranked_results(
                         score = ?,
                         status = ?,
                         years_experience = COALESCE(?, years_experience),
+                        english_confidence = COALESCE(?, english_confidence),
+                        english_confidence_reason = COALESCE(?, english_confidence_reason),
                         last_updated = ?
                     WHERE id = ?
                 """, (
@@ -1038,6 +1103,8 @@ def import_ranked_results(
                     score_int,
                     candidate_status,
                     years_experience,
+                    english_confidence,
+                    english_confidence_reason,
                     now,
                     candidate_id,
                 ))
@@ -1056,10 +1123,12 @@ def import_ranked_results(
                         score,
                         status,
                         years_experience,
+                        english_confidence,
+                        english_confidence_reason,
                         last_updated,
                         notes
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     candidate_code,
                     full_name or "Unknown Candidate",
@@ -1071,6 +1140,8 @@ def import_ranked_results(
                     score_int,
                     candidate_status,
                     years_experience,
+                    english_confidence,
+                    english_confidence_reason,
                     now,
                     str((item.get("ai_review") or {}).get("reasoning") or "").strip() or None,
                 ))
@@ -1142,6 +1213,21 @@ def import_ranked_results(
                 now,
                 now,
             ))
+
+        # Auto-populate the tag taxonomy from this campaign's AI-designed scoring capabilities
+        # (e.g. "MLOps/LLMOps Production Engineering") instead of only ever growing from
+        # whatever recruiters happened to type by hand in past campaigns — a brand-new role
+        # type otherwise starts with zero relevant tag suggestions.
+        if pipeline_dir:
+            schema_path = Path(pipeline_dir) / "data" / "ranking_feature_schema.json"
+            if schema_path.exists():
+                try:
+                    feature_schema = json.loads(schema_path.read_text(encoding="utf-8"))
+                    capabilities = feature_schema.get("capabilities") if isinstance(feature_schema, dict) else None
+                    if isinstance(capabilities, list):
+                        _link_skill_names_to_campaign(conn.cursor(), campaign_id, capabilities)
+                except Exception:
+                    logger.exception("Failed to auto-populate tags from %s", schema_path)
 
         conn.execute("""
             UPDATE pipeline_runs
@@ -1553,6 +1639,8 @@ def list_campaign_candidates(
             cand.score,
             cand.status,
             cand.years_experience,
+            cand.english_confidence,
+            cand.english_confidence_reason,
             cand.last_updated,
             cand.notes,
             GROUP_CONCAT(DISTINCT s.name) AS skills,
@@ -1713,6 +1801,74 @@ def refresh_candidates(current_user=Depends(get_current_user)):
     return {"success": True, "message": "Candidates refreshed"}
 
 
+def _link_skill_names_to_campaign(cur, campaign_id: int, skill_names) -> None:
+    """Ensure each skill name exists in `skills` and is linked to this campaign."""
+    for skill in skill_names:
+        skill = str(skill or "").strip()
+        if not skill:
+            continue
+
+        cur.execute("INSERT OR IGNORE INTO skills (name) VALUES (?)", (skill,))
+        skill_row = cur.execute("SELECT id FROM skills WHERE name = ?", (skill,)).fetchone()
+        cur.execute(
+            "INSERT OR IGNORE INTO campaign_skills (campaign_id, skill_id) VALUES (?, ?)",
+            (campaign_id, skill_row["id"]),
+        )
+
+
+def _save_uploaded_sample_cv(sample_cv: Optional[UploadFile]) -> Optional[str]:
+    """Save an uploaded sample CV to UPLOAD_DIR and return its stored filename, or None."""
+    if sample_cv is None or not sample_cv.filename:
+        return None
+
+    if not sample_cv.filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Only PDF files are allowed")
+
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    safe_filename = sample_cv.filename.replace(" ", "_")
+    saved_filename = f"{timestamp}_{safe_filename}"
+    saved_path = UPLOAD_DIR / saved_filename
+
+    with open(saved_path, "wb") as buffer:
+        shutil.copyfileobj(sample_cv.file, buffer)
+
+    return saved_filename
+
+
+def _sync_pipeline_config_for_campaign(conn, campaign_id: int, target_profiles, sample_cv_filename):
+    """Propagate a campaign's target_profiles / sample CV into an already-set-up pipeline.
+
+    setup_pipeline_campaign() bakes these into campaign.yaml / input/seed_cvs/ at setup time,
+    but editing a campaign afterwards (via update_campaign) previously never touched the
+    pipeline directory at all, so changing "Target Profiles" or re-uploading a CV after setup
+    had no effect on future pipeline runs. This keeps them in sync.
+    """
+    config_row = conn.execute(
+        "SELECT pipeline_dir FROM pipeline_campaign_configs WHERE campaign_id = ?",
+        (campaign_id,),
+    ).fetchone()
+    if not config_row or not config_row["pipeline_dir"]:
+        return
+
+    pipeline_dir = Path(config_row["pipeline_dir"])
+    campaign_yaml_path = pipeline_dir / "campaign.yaml"
+
+    if target_profiles and campaign_yaml_path.exists():
+        try:
+            config = yaml.safe_load(campaign_yaml_path.read_text(encoding="utf-8")) or {}
+            config.setdefault("filter", {})["max_candidates"] = int(target_profiles)
+            campaign_yaml_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+        except Exception:
+            logger.exception("Failed to sync target_profiles into %s", campaign_yaml_path)
+
+    if sample_cv_filename:
+        source_cv_path = UPLOAD_DIR / sample_cv_filename
+        if source_cv_path.exists():
+            seed_cv_dir = pipeline_dir / "input" / "seed_cvs"
+            seed_cv_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source_cv_path, seed_cv_dir / source_cv_path.name)
+
+
 @app.post("/api/campaigns")
 def create_campaign(
     campaign_name: str = Form(...),
@@ -1726,23 +1882,7 @@ def create_campaign(
 ):
     # FIX 1: Fixed Deprecation Warning by using timezone-aware UTC datetime
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    saved_filename = None
-
-    if sample_cv is not None and sample_cv.filename:
-        if not sample_cv.filename.lower().endswith(".pdf"):
-            raise HTTPException(
-                status_code=400,
-                detail="Only PDF files are allowed"
-            )
-
-        # FIX 1 (Continued): Replaced deprecated utcnow for the file timestamp
-        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
-        safe_filename = sample_cv.filename.replace(" ", "_")
-        saved_filename = f"{timestamp}_{safe_filename}"
-        saved_path = UPLOAD_DIR / saved_filename
-
-        with open(saved_path, "wb") as buffer:
-            shutil.copyfileobj(sample_cv.file, buffer)
+    saved_filename = _save_uploaded_sample_cv(sample_cv)
 
     conn = get_connection()
     cur = conn.cursor()
@@ -1885,6 +2025,7 @@ def update_campaign(
     desired_skills: str = Form(...),
     target_profiles: int = Form(25),
     status: str = Form("Active"),
+    sample_cv: Optional[UploadFile] = File(None),
     current_user=Depends(get_current_user)
 ):
     conn = get_connection()
@@ -1895,7 +2036,13 @@ def update_campaign(
         conn.close()
         raise HTTPException(status_code=404, detail="Campaign not found")
 
-    cur.execute("""
+    # The edit form has always let recruiters re-upload a sample CV here, but this endpoint
+    # never declared a sample_cv parameter, so FastAPI silently dropped it — the file was
+    # never saved and never reached the pipeline. Handle it the same way create_campaign does.
+    saved_filename = _save_uploaded_sample_cv(sample_cv)
+
+    cur.execute(
+        """
         UPDATE campaigns
         SET
             campaign_name = ?,
@@ -1904,18 +2051,24 @@ def update_campaign(
             experience = ?,
             target_profiles = ?,
             status = ?,
+            sample_cv_filename = COALESCE(?, sample_cv_filename),
             updated_at = ?
         WHERE id = ?
-    """, (
-        campaign_name,
-        location,
-        position_name,
-        experience,
-        target_profiles,
-        status,
-        now,
-        campaign_id
-    ))
+        """,
+        (
+            campaign_name,
+            location,
+            position_name,
+            experience,
+            target_profiles,
+            status,
+            saved_filename,
+            now,
+            campaign_id,
+        ),
+    )
+
+    _sync_pipeline_config_for_campaign(conn, campaign_id, target_profiles, saved_filename)
 
     cur.execute(
         "DELETE FROM campaign_skills WHERE campaign_id = ?",
@@ -2039,6 +2192,8 @@ def get_candidate(candidate_id: int,
             cand.score,
             cand.status,
             cand.years_experience,
+            cand.english_confidence,
+            cand.english_confidence_reason,
             cand.last_updated,
             cand.notes,
             GROUP_CONCAT(DISTINCT s.name) AS skills

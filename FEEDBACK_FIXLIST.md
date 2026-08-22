@@ -107,16 +107,37 @@ Data Engineer roles), Emine (Chapter Lead Solution Architect, DevOps Engineer ro
       never appeared in a past search) — user said to drop this for now.
       — Data & AI Chapter Lead feedback (Kagan)
 
-- [ ] **"Target Profiles" parameter has no observable effect.** Reviewer varied it up and down and
-      saw no meaningful change in the result set, and couldn't tell from the UI whether it affects
-      how many candidates get scanned, how many get returned, or just how many are displayed. Either
-      fix the parameter so it visibly does something, or document/label what it actually controls.
+- [x] **"Target Profiles" parameter has no observable effect.** ~~Reviewer varied it up and down and
+      saw no meaningful change in the result set~~ — **confirmed and fixed 2026-08-22.** It wasn't
+      subtle: `target_profiles` was written to the `campaigns` table and never read by any pipeline
+      script (`search.py`, `generate_queries.py`, `filter.py`, `pipeline.py` all had zero references
+      to it) — a completely dead parameter, not a weak effect. Wired it to `filter.max_candidates`
+      (how many search hits get AI-reviewed per location, which directly controls shortlist size —
+      also the likely lever for the separate "shortlist volume too low" complaint below). Applied at
+      two points: (1) `setup_pipeline_campaign` now reads the campaign's `target_profiles` and bakes
+      it into `campaign.yaml` instead of a hardcoded 40; (2) editing a campaign's Target Profiles
+      *after* pipeline setup now updates the existing `campaign.yaml` too (previously, editing a
+      campaign never touched its pipeline directory at all, so post-setup changes silently had no
+      effect either). Verified end-to-end: create → setup → yaml contains the chosen value; edit
+      after setup → yaml value updates to match.
       — GCP Data Engineer feedback (Kagan)
 
-- [ ] **Example CV upload has no observable effect on shortlist ranking.** Reviewer uploaded a
-      sample CV expecting it to influence candidate matching/ranking and saw no discernible impact.
-      Same ask as above: either wire it into the scoring path or make clear what it's currently
-      used for.
+- [x] **Example CV upload has no observable effect on shortlist ranking.** ~~Reviewer uploaded a
+      sample CV expecting it to influence candidate matching/ranking and saw no discernible
+      impact~~ — **confirmed and fixed 2026-08-22, root cause found.** The wiring to actually *use*
+      a seed CV already existed in `generate_queries.py` (`_load_seed_cvs`), which reads PDFs from
+      `campaign_dir/input/seed_cvs/` — but the upload endpoint only ever saved the file to a
+      generic uploads folder and stored its filename on the `campaigns` row; it was never copied
+      into the one folder the pipeline actually reads. Separately, and more surprising: the *edit*
+      campaign form has always shown a CV upload field and sent it to the backend, but the
+      `PUT /api/campaigns/{id}` endpoint never declared a `sample_cv` parameter at all — FastAPI
+      silently drops unbound multipart fields, so re-uploading a CV via edit didn't even get saved,
+      let alone reach the pipeline. Fixed both: `update_campaign` now accepts and saves the file
+      (matching `create_campaign`'s existing logic, extracted into a shared helper), and both the
+      initial pipeline setup and any later edit now copy the sample CV into
+      `input/seed_cvs/<filename>.pdf` so query generation actually uses it. Verified end-to-end
+      (create with CV → setup → file present in `seed_cvs/`; edit after setup with a new CV → new
+      file appears in the existing pipeline's `seed_cvs/`).
       — GCP Data Engineer feedback (Kagan)
 
 - [ ] **Terminology mismatch with recruiter workflows.** Platform vocabulary doesn't line up with
@@ -167,23 +188,36 @@ Data Engineer roles), Emine (Chapter Lead Solution Architect, DevOps Engineer ro
       recruiter efficiency, not just a nice-to-have.
       — MLE feedback (Kagan)
 
-- [ ] **Tag taxonomy is too narrow.** Manual tag editing is currently limited to 8 fixed options
-      (A/B Testing, LLM, LLMOps, MLE, MLOps, NLP, Python, Analytics) — missing many skills that are
-      critical for other role types, forcing free-text tag entry which is typo-prone and degrades
-      search quality. Expand the taxonomy so common skills across role types have a canonical tag,
-      and ideally auto-derive relevant tags from the job description / filter criteria at campaign
-      creation time rather than requiring manual cleanup afterward (ties into the auto-tagging bug
-      above).
+- [x] **Tag taxonomy is too narrow.** ~~Manual tag editing is currently limited to 8 fixed
+      options~~ — **investigated and fixed differently than assumed, 2026-08-22.** The 8 tags
+      weren't a hardcoded limit — `skills` is a fully dynamic table (already had 33+ entries across
+      real campaigns by the time this was checked). The real problem: tags only ever grow from
+      whatever a recruiter happened to type by hand before, so a brand-new role type starts with
+      zero relevant suggestions, and recruiters have no way to know what's "canonical" for their
+      role vs. free-typing and risking typos. Fix: `import_ranked_results` now auto-populates the
+      tag taxonomy from the campaign's own AI-designed scoring `capabilities` (e.g. "MLOps/LLMOps
+      Production Engineering", "Turkey/Regional Connection" — already generated per-campaign by
+      `feature_designer_agent.py`, previously unused for tagging) — so a new role type gets
+      good, specific, non-typo tag suggestions automatically, with zero manual typing required.
+      Verified end-to-end against a real campaign (`mle-engineer`): 7 new capability-derived tags
+      added on import, re-running import doesn't duplicate them.
       — GCP Data Engineer feedback (Kagan)
 
-- [ ] **[New feature idea] English Language Confidence signal.** One 90%-match candidate for GCP
-      Data Engineer had historically been rejected for English proficiency — a signal the current
-      match score doesn't account for. Proposed: a "Low / Medium / High English Confidence" score
-      derived from available signals (CV written entirely in Turkish, whether LinkedIn lists English
-      and at what level, answers to English-related application questions, presence/absence of
-      international study or work history). Explicitly framed as a soft risk signal for recruiters,
-      not a hard English-level determination — should surface alongside the match score, not replace
-      it.
+- [x] **[New feature idea] English Language Confidence signal — built.** One 90%-match candidate
+      for GCP Data Engineer had historically been rejected for English proficiency — a signal the
+      match score didn't account for. Added exactly as proposed: the AI reviewer (`filter.py`) now
+      also extracts an `english_confidence` (LOW/MEDIUM/HIGH) + short reason per candidate, based on
+      whether the profile text itself is in English, explicit proficiency/certification mentions,
+      and international study/work history. Explicitly a soft signal — verified it never affects
+      ACCEPT/REJECT (a LOW-confidence candidate can still be ACCEPTed), and defaults safely to
+      MEDIUM (never LOW) when there's no evidence either way, so absence of a signal doesn't read as
+      a red flag. Wired end-to-end: new `candidates.english_confidence`/`_reason` DB columns
+      (migration verified idempotent against a copy of the live DB, including recreating the
+      `candidate_profile_summary` view, which — being a SQL view — doesn't pick up new table columns
+      automatically), exposed via the candidate list/detail APIs, and shown as a color-coded badge
+      (green/amber/red) with its reason on the candidate detail panel.
+      Not done: "answers to English-related application questions" — no ATS/application-question
+      data exists anywhere in this codebase to draw that signal from.
       — GCP Data Engineer feedback (Kagan)
 
 ---
@@ -221,5 +255,18 @@ Data Engineer roles), Emine (Chapter Lead Solution Architect, DevOps Engineer ro
 3. ~~Exclude-current-ING-employee filter~~ — done 2026-08-22.
 4. ~~Similarity score transparency~~ — done 2026-08-22 (MC/SM exclusion investigation dropped).
 5. ~~Name-matching bug (GS/GUS profile link)~~ — dropped 2026-08-22, not a confirmed real bug.
-6. Everything else (tag taxonomy expansion, ATS enrichment, English confidence score, target
-   profiles / example CV clarity, performance) — larger scope, sequence after the above.
+6. Item 6 was split into narrower sub-tasks 2026-08-22 (see below); done in order:
+   - ~~Target Profiles parameter~~ — done (was fully dead code; wired to `filter.max_candidates`).
+   - ~~Example CV upload~~ — done (root cause: never copied to the one folder the pipeline reads;
+     also fixed the edit-form upload path, which silently dropped the file entirely).
+   - ~~English Language Confidence signal~~ — done (built as proposed, soft signal only).
+   - ~~Tag taxonomy expansion~~ — done (auto-populate from AI-designed capabilities, not a bigger
+     fixed list).
+   - Candidate generation is slow — not started, needs profiling of a real run first.
+   - Shortlist volume too low for easy-to-fill roles — not started; may already be partially
+     addressed by the Target Profiles fix above (recruiters can now raise it directly per
+     campaign), but not verified against the original GCP Data Engineer complaint specifically.
+   - ATS/Tracker history enrichment — not started, needs to know what (if any) real ATS system
+     this should pull from; no such integration exists in this codebase today.
+   - Terminology mismatch — not started, needs concrete "call it X not Y" examples from a
+     recruiter before it's actionable.

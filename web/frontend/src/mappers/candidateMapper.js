@@ -15,6 +15,8 @@ export function mapCandidateFromApi(candidate) {
     score: candidate.score || 0,
     status: candidate.status,
     yearsExperience: candidate.years_experience,
+    englishConfidence: candidate.english_confidence,
+    englishConfidenceReason: candidate.english_confidence_reason,
     lastUpdated: candidate.last_updated,
     notes: candidate.notes,
     skills: (candidate.skills || "")
