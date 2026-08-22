@@ -80,7 +80,7 @@ export function CandidateEditModal({ candidate, onClose, onSave }) {
             Status
           </span>
           <select
-            className="w-full rounded-2xl border border-slate-300 px-4 py-3 text-sm outline-none focus:border-orange-500"
+            className="w-full rounded-lg border border-slate-300 px-4 py-3 text-sm outline-none focus:border-indigo-600"
             value={form.status || "New"}
             onChange={(event) => updateField("status", event.target.value)}
           >
@@ -97,7 +97,7 @@ export function CandidateEditModal({ candidate, onClose, onSave }) {
             Skills, comma separated
           </span>
           <input
-            className="w-full rounded-2xl border border-slate-300 px-4 py-3 text-sm outline-none focus:border-orange-500"
+            className="w-full rounded-lg border border-slate-300 px-4 py-3 text-sm outline-none focus:border-indigo-600"
             value={(form.skills || []).join(", ")}
             onChange={(event) => updateSkillsText(event.target.value)}
           />
@@ -108,7 +108,7 @@ export function CandidateEditModal({ candidate, onClose, onSave }) {
             Notes
           </span>
           <textarea
-            className="min-h-28 w-full rounded-2xl border border-slate-300 px-4 py-3 text-sm outline-none focus:border-orange-500"
+            className="min-h-28 w-full rounded-lg border border-slate-300 px-4 py-3 text-sm outline-none focus:border-indigo-600"
             value={form.notes || ""}
             onChange={(event) => updateField("notes", event.target.value)}
           />

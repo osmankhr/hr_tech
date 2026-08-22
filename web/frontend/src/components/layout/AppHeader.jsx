@@ -9,12 +9,12 @@ export function AppHeader({
   onSignOut,
 }) {
   return (
-    <header className="mb-6 flex flex-col gap-4 rounded-3xl bg-white p-5 shadow-sm ring-1 ring-slate-200 md:flex-row md:items-center md:justify-between">
+    <header className="mb-6 flex flex-col gap-4 rounded-xl bg-white p-5 shadow-sm ring-1 ring-slate-200 md:flex-row md:items-center md:justify-between">
       <div>
-        <p className="text-sm font-medium text-blue-600">
+        <p className="text-sm font-medium text-indigo-700">
           Recruitment Intelligence
         </p>
-        <h2 className="text-2xl font-bold">Candidate Search Workspace</h2>
+        <h2 className="text-xl font-semibold text-slate-900">Candidate Search Workspace</h2>
         <p className="mt-1 text-sm text-slate-500">
           Signed in as {currentUser?.full_name} ({currentUser?.role})
         </p>

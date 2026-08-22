@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { AlertTriangle } from "lucide-react";
 import { campaignApi } from "../api/campaignApi";
 import { candidateApi } from "../api/candidateApi";
 import { AppHeader } from "../components/layout/AppHeader";
@@ -714,7 +715,7 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
             searchBusy ||
             !artifactStatus.searchResultsExists
           }
-          className="rounded-2xl border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 disabled:opacity-60"
+          className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 disabled:opacity-60"
         >
           {artifactStatus.checking
             ? "Checking search..."
@@ -731,7 +732,7 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
             rankedBusy ||
             !artifactStatus.rankedResultsExists
           }
-          className="rounded-2xl border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 disabled:opacity-60"
+          className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 disabled:opacity-60"
         >
           {artifactStatus.checking
             ? "Checking ranked..."
@@ -827,7 +828,7 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
             onSignOut={onSignOut}
           />
 
-          <div className="mb-6 flex flex-wrap gap-2 rounded-2xl bg-white p-3 shadow-sm ring-1 ring-slate-200 lg:hidden">
+          <div className="mb-6 flex flex-wrap gap-2 rounded-lg bg-white p-3 shadow-sm ring-1 ring-slate-200 lg:hidden">
             {[
               ["dashboard", "Dashboard"],
               ["pipeline", "Pipeline"],
@@ -856,7 +857,7 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
           )}
 
           {apiError && (
-            <div className="mb-6 rounded-3xl border border-red-200 bg-red-50 p-5 text-sm text-red-700">
+            <div className="mb-6 rounded-xl border border-red-200 bg-red-50 p-5 text-sm text-red-700">
               {apiError}
             </div>
           )}
@@ -937,7 +938,7 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
             <section className="space-y-6">
               <Card className="p-5">
                 <div className="mb-4">
-                  <h3 className="text-lg font-semibold">Pipeline Run Control</h3>
+                  <h3 className="text-base font-semibold text-slate-900">Pipeline Run Control</h3>
                   <p className="text-sm text-slate-500">
                     Campaign inputs are saved in create form. Run and monitor pipeline from here.
                   </p>
@@ -948,7 +949,7 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
                   <select
                     value={pipelineCampaignId}
                     onChange={(event) => setPipelineCampaignId(event.target.value)}
-                    className="w-full rounded-2xl border border-slate-300 px-3 py-2.5 outline-none focus:border-orange-500"
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2.5 outline-none focus:border-indigo-600"
                   >
                     <option value="">Select campaign</option>
                     {campaigns.map((campaign) => (
@@ -960,14 +961,17 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
                 </label>
 
                 {pipelineCampaignId && !pipelineRunning && pipelineRuns.length === 0 && (
-                  <div className="mt-4 rounded-2xl border-2 border-orange-400 bg-orange-50 px-4 py-3 text-sm font-medium text-orange-900">
-                    ⚠️ This campaign hasn't been searched yet — saving the config does not start
-                    the search. Click <strong>"Run Pipeline"</strong> below to find candidates.
+                  <div className="mt-4 flex items-start gap-2 rounded-lg border-2 border-amber-400 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-900">
+                    <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                    <span>
+                      This campaign hasn't been searched yet — saving the config does not start
+                      the search. Click <strong>"Run Pipeline"</strong> below to find candidates.
+                    </span>
                   </div>
                 )}
 
                 {pipelineRunning && (
-                  <div className="mt-4 rounded-2xl border border-amber-200 bg-gradient-to-r from-amber-50 to-orange-50 px-4 py-4">
+                  <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-4">
                     <div className="flex items-center gap-3">
                       <div className="h-5 w-5 animate-spin rounded-full border-2 border-amber-700 border-t-transparent" />
                       <div>
@@ -981,13 +985,13 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
                 )}
 
                 {pipelineError && (
-                  <div className="mt-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                  <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
                     {pipelineError}
                   </div>
                 )}
 
                 {pipelineMessage && (
-                  <div className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
+                  <div className="mt-4 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
                     {pipelineMessage}
                   </div>
                 )}
@@ -1001,7 +1005,7 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
                     value={pipelineMaxCandidates}
                     placeholder="100"
                     onChange={(event) => setPipelineMaxCandidates(event.target.value)}
-                    className="w-full rounded-2xl border border-slate-300 px-3 py-2.5 outline-none focus:border-orange-500"
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2.5 outline-none focus:border-indigo-600"
                   />
                   <p className="mt-1 text-xs text-slate-500">
                     This value is for the number of candidates to be shortlisted and ranked by the AI pipeline. The default is 100, but you can reduce it for faster runs.
@@ -1013,9 +1017,9 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
                     type="button"
                     onClick={() => runPipeline("full")}
                     disabled={pipelineBusy || !pipelineCampaignId || pipelineRunning}
-                    className={`rounded-2xl bg-slate-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-60 ${
+                    className={`rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-60 ${
                       pipelineCampaignId && !pipelineRunning && pipelineRuns.length === 0
-                        ? "ring-4 ring-orange-300 animate-pulse"
+                        ? "ring-4 ring-indigo-300 animate-pulse"
                         : ""
                     }`}
                   >
@@ -1026,7 +1030,7 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
                     type="button"
                     onClick={() => runPipeline("rank")}
                     disabled={pipelineBusy || !pipelineCampaignId || pipelineRunning}
-                    className="rounded-2xl border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 disabled:opacity-60"
+                    className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 disabled:opacity-60"
                   >
                     Run Rank Only
                   </button>
@@ -1034,11 +1038,11 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
               </Card>
 
               <Card className="p-5">
-                <h3 className="text-lg font-semibold">Run Timeline</h3>
+                <h3 className="text-base font-semibold text-slate-900">Run Timeline</h3>
                 <p className="mb-4 text-sm text-slate-500">Latest pipeline operations for selected campaign.</p>
                 <div className="space-y-2">
                   {pipelineRuns.map((run) => (
-                    <div key={run.id} className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                    <div key={run.id} className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3">
                       <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
                         <p className="font-medium text-slate-800">#{run.id} {run.run_type} - {run.status}</p>
                         <p className="text-slate-500">{run.started_at}</p>
@@ -1103,10 +1107,10 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
           )}
 
           {view === "database" && (
-            <section className="rounded-3xl bg-white p-5 shadow-sm ring-1 ring-slate-200">
+            <section className="rounded-xl bg-white p-5 shadow-sm ring-1 ring-slate-200">
               <div className="mb-5 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                 <div>
-                  <h3 className="text-lg font-semibold">All Candidates Database</h3>
+                  <h3 className="text-base font-semibold text-slate-900">All Candidates Database</h3>
                   <p className="text-sm text-slate-500">Search, filter, and review candidate profiles.</p>
                 </div>
 
@@ -1115,13 +1119,13 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
                     value={query}
                     onChange={(event) => setQuery(event.target.value)}
                     placeholder="Search candidates..."
-                    className="w-full rounded-2xl border border-slate-300 py-2.5 px-4 text-sm outline-none focus:border-orange-500 sm:w-64"
+                    className="w-full rounded-lg border border-slate-300 py-2.5 px-4 text-sm outline-none focus:border-indigo-600 sm:w-64"
                   />
 
                   <select
                     value={statusFilter}
                     onChange={(event) => setStatusFilter(event.target.value)}
-                    className="rounded-2xl border border-slate-300 py-2.5 px-4 text-sm outline-none focus:border-orange-500"
+                    className="rounded-lg border border-slate-300 py-2.5 px-4 text-sm outline-none focus:border-indigo-600"
                   >
                     {["All", "New", "Reviewed", "Contacted", "Shortlisted", "Rejected"].map((status) => (
                       <option key={status}>{status}</option>

@@ -1,9 +1,10 @@
+import { Calendar, Compass, MapPin } from "lucide-react";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 
 function MetricBox({ label, value }) {
   return (
-    <div className="rounded-2xl bg-slate-50 p-3">
+    <div className="rounded-lg bg-slate-50 p-3">
       <p className="font-semibold">{value || 0}</p>
       <p className="text-xs text-slate-500">{label}</p>
     </div>
@@ -17,7 +18,7 @@ export function CampaignCard({ campaign, full, onOpen, onViewDetails, onEdit, on
       tabIndex={0}
       onClick={() => onOpen(campaign)}
       title="Open campaign and explore candidates"
-      className="cursor-pointer rounded-2xl border border-slate-200 p-4 transition hover:border-orange-200 hover:bg-orange-50/30"
+      className="cursor-pointer rounded-lg border border-slate-200 p-4 transition hover:border-indigo-200 hover:bg-indigo-50/30"
     >
       <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
         <div>
@@ -36,15 +37,21 @@ export function CampaignCard({ campaign, full, onOpen, onViewDetails, onEdit, on
           </p>
 
           <div className="mt-2 flex flex-wrap gap-3 text-sm text-slate-500">
-            <span>📍 {campaign.location}</span>
-            <span>📅 {campaign.createdAt || "-"}</span>
-            <span>🧭 Exp: {campaign.experience}</span>
+            <span className="inline-flex items-center gap-1">
+              <MapPin className="h-3.5 w-3.5" /> {campaign.location}
+            </span>
+            <span className="inline-flex items-center gap-1">
+              <Calendar className="h-3.5 w-3.5" /> {campaign.createdAt || "-"}
+            </span>
+            <span className="inline-flex items-center gap-1">
+              <Compass className="h-3.5 w-3.5" /> Exp: {campaign.experience}
+            </span>
             <span>{campaign.campaignCode || campaign.id}</span>
           </div>
 
           <div className="mt-3 flex flex-wrap gap-2">
             {(campaign.desiredSkills || []).map((skill) => (
-              <Badge key={skill} tone="orange">
+              <Badge key={skill} tone="brand">
                 {skill}
               </Badge>
             ))}

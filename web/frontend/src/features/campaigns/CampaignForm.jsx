@@ -24,7 +24,7 @@ export function CampaignForm({
     <Card className="mb-6 p-5">
       <div className="mb-5 flex items-start justify-between gap-4">
         <div>
-          <h3 className="text-lg font-semibold">Campaign Form</h3>
+          <h3 className="text-base font-semibold text-slate-900">Campaign Form</h3>
           <p className="mt-1 text-sm text-slate-500">
             Add or update campaign search criteria.
           </p>
@@ -36,7 +36,7 @@ export function CampaignForm({
       </div>
 
       {formError && (
-        <div className="mb-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+        <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
           {formError}
         </div>
       )}
@@ -68,7 +68,7 @@ export function CampaignForm({
             Experience *
           </span>
           <select
-            className="w-full rounded-2xl border border-slate-300 px-4 py-3 text-sm outline-none focus:border-orange-500"
+            className="w-full rounded-lg border border-slate-300 px-4 py-3 text-sm outline-none focus:border-indigo-600"
             value={form.experience}
             onChange={(event) => updateForm("experience", event.target.value)}
           >
@@ -95,7 +95,7 @@ export function CampaignForm({
             Status
           </span>
           <select
-            className="w-full rounded-2xl border border-slate-300 px-4 py-3 text-sm outline-none focus:border-orange-500"
+            className="w-full rounded-lg border border-slate-300 px-4 py-3 text-sm outline-none focus:border-indigo-600"
             value={form.status}
             onChange={(event) => updateForm("status", event.target.value)}
           >
@@ -114,7 +114,7 @@ export function CampaignForm({
             ref={sampleCvRef}
             type="file"
             accept="application/pdf,.pdf"
-            className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-2.5 text-sm file:mr-4 file:rounded-xl file:border-0 file:bg-slate-900 file:px-3 file:py-2 file:text-sm file:font-medium file:text-white hover:file:bg-slate-800"
+            className="w-full rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm file:mr-4 file:rounded-xl file:border-0 file:bg-slate-900 file:px-3 file:py-2 file:text-sm file:font-medium file:text-white hover:file:bg-slate-800"
             onChange={handleCvUpload}
           />
 

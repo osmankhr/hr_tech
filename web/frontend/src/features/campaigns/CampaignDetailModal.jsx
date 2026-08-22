@@ -9,7 +9,7 @@ export function CampaignDetailModal({ campaign, onClose, onEdit }) {
     <Modal title="Campaign Details" onClose={onClose}>
       <div className="space-y-4 text-sm">
         <div>
-          <h4 className="text-xl font-semibold">{campaign.campaignName}</h4>
+          <h4 className="text-xl font-semibold text-slate-900">{campaign.campaignName}</h4>
           <p className="text-slate-500">{campaign.positionName}</p>
         </div>
 
@@ -30,7 +30,7 @@ export function CampaignDetailModal({ campaign, onClose, onEdit }) {
           <p className="mb-2 font-medium text-slate-700">Desired Skills</p>
           <div className="flex flex-wrap gap-2">
             {(campaign.desiredSkills || []).map((skill) => (
-              <Badge key={skill} tone="orange">
+              <Badge key={skill} tone="brand">
                 {skill}
               </Badge>
             ))}
@@ -50,7 +50,7 @@ export function CampaignDetailModal({ campaign, onClose, onEdit }) {
 
 function Info({ label, value }) {
   return (
-    <div className="rounded-2xl bg-slate-50 p-3">
+    <div className="rounded-lg bg-slate-50 p-3">
       <p className="text-xs text-slate-500">{label}</p>
       <p className="font-medium text-slate-900">{value || "-"}</p>
     </div>

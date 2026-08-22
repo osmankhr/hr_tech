@@ -1,17 +1,18 @@
+import { Mail, MapPin, Star } from "lucide-react";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 
 function getCandidateStatusTone(status) {
   if (status === "Shortlisted") return "green";
-  if (status === "Contacted") return "orange";
-  if (status === "Reviewed") return "purple";
+  if (status === "Contacted") return "brand";
+  if (status === "Reviewed") return "gray";
   if (status === "Rejected") return "red";
   return "amber";
 }
 
 export function CandidateCard({ candidate, onOpen, onEdit }) {
   return (
-    <div className="rounded-2xl border border-slate-200 p-4 transition hover:border-orange-200 hover:bg-orange-50/30">
+    <div className="rounded-lg border border-slate-200 p-4 transition hover:border-indigo-200 hover:bg-indigo-50/30">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
         <div
           role="button"
@@ -34,8 +35,12 @@ export function CandidateCard({ candidate, onOpen, onEdit }) {
           </p>
 
           <div className="mt-2 flex flex-wrap gap-3 text-sm text-slate-500">
-            <span>📍 {candidate.location}</span>
-            <span>✉️ {candidate.email}</span>
+            <span className="inline-flex items-center gap-1">
+              <MapPin className="h-3.5 w-3.5" /> {candidate.location}
+            </span>
+            <span className="inline-flex items-center gap-1">
+              <Mail className="h-3.5 w-3.5" /> {candidate.email}
+            </span>
             <span>Experience: {candidate.yearsExperience || "-"} years</span>
             {candidate.ranking?.rank && (
               <span>
@@ -46,7 +51,7 @@ export function CandidateCard({ candidate, onOpen, onEdit }) {
 
           <div className="mt-3 flex flex-wrap gap-2">
             {(candidate.skills || []).map((skill) => (
-              <Badge key={skill} tone="orange">
+              <Badge key={skill} tone="brand">
                 {skill}
               </Badge>
             ))}
@@ -54,8 +59,8 @@ export function CandidateCard({ candidate, onOpen, onEdit }) {
         </div>
 
         <div className="flex items-center gap-3 lg:flex-col lg:items-end">
-          <div className="flex items-center gap-1 rounded-2xl bg-amber-50 px-3 py-2 text-amber-700">
-            <span>⭐</span>
+          <div className="flex items-center gap-1 rounded-lg bg-amber-50 px-3 py-2 text-amber-700">
+            <Star className="h-4 w-4" />
             <span className="font-semibold">
               {candidate.ranking?.manual_score ?? candidate.score}
             </span>

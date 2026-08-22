@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Users } from "lucide-react";
 import { Button } from "../components/ui/Button";
 import { Card } from "../components/ui/Card";
 import { InputField } from "../components/ui/InputField";
@@ -15,10 +16,10 @@ export default function AuthPage({ onSignIn, authError }) {
     <div className="flex min-h-screen items-center justify-center bg-slate-50 p-6">
       <Card className="w-full max-w-md p-6">
         <div className="mb-6 text-center">
-          <div className="mx-auto mb-3 flex h-14 w-14 items-center justify-center rounded-2xl bg-blue-600 text-2xl text-white">
-            👥
+          <div className="mx-auto mb-3 flex h-14 w-14 items-center justify-center rounded-lg bg-indigo-700 text-white">
+            <Users className="h-6 w-6" />
           </div>
-          <h1 className="text-2xl font-bold">HR Candidate Search</h1>
+          <h1 className="text-xl font-semibold text-slate-900">HR Candidate Search</h1>
           <p className="mt-1 text-sm text-slate-500">
             Sign in to access campaign and candidate data.
           </p>
@@ -41,7 +42,7 @@ export default function AuthPage({ onSignIn, authError }) {
           />
 
           {authError && (
-            <div className="rounded-2xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+            <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
               {authError}
             </div>
           )}

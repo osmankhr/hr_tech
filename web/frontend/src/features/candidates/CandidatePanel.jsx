@@ -19,13 +19,13 @@ export function CandidatePanel({
       className={
         full
           ? ""
-          : "rounded-3xl bg-white p-5 shadow-sm ring-1 ring-slate-200"
+          : "rounded-xl bg-white p-5 shadow-sm ring-1 ring-slate-200"
       }
     >
       {!full && (
         <div className="mb-4 flex items-center justify-between">
           <div>
-            <h3 className="text-lg font-semibold">{title}</h3>
+            <h3 className="text-base font-semibold text-slate-900">{title}</h3>
             <p className="text-sm text-slate-500">{subtitle}</p>
           </div>
 
@@ -52,7 +52,7 @@ export function CandidatePanel({
       </div>
 
       {!!onPageChange && !!totalPages && totalPages > 1 && (
-        <div className="mt-4 flex items-center justify-between rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm">
+        <div className="mt-4 flex items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm">
           <button
             type="button"
             onClick={() => onPageChange(Math.max(1, (page || 1) - 1))}

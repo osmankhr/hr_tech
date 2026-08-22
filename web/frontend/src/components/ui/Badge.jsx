@@ -1,9 +1,8 @@
 export function Badge({ children, tone = "gray" }) {
   const tones = {
     green: "border-emerald-200 bg-emerald-50 text-emerald-700",
-    orange: "border-orange-200 bg-orange-50 text-orange-700",
+    brand: "border-indigo-200 bg-indigo-50 text-indigo-700",
     amber: "border-amber-200 bg-amber-50 text-amber-700",
-    purple: "border-purple-200 bg-purple-50 text-purple-700",
     gray: "border-slate-200 bg-slate-50 text-slate-700",
     red: "border-red-200 bg-red-50 text-red-700",
   };

@@ -20,11 +20,11 @@ function CommentItem({ comment, allComments, onReply }) {
     <div className="flex flex-col gap-2 mt-4">
       <div className="flex gap-3">
         {/* Avatar Placeholder */}
-        <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-orange-400 to-orange-600 flex items-center justify-center text-white font-bold text-xs shadow-md shrink-0">
+        <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-indigo-500 to-indigo-700 flex items-center justify-center text-white font-bold text-xs shadow-md shrink-0">
           {comment.user_name ? comment.user_name.charAt(0).toUpperCase() : 'U'}
         </div>
         
-        <div className="flex-1 bg-white border border-slate-100 shadow-sm rounded-2xl rounded-tl-none p-3">
+        <div className="flex-1 bg-white border border-slate-100 shadow-sm rounded-lg rounded-tl-none p-3">
           <div className="flex items-baseline gap-2 mb-1">
             <span className="font-semibold text-slate-800 text-sm">{comment.user_name}</span>
             <span className="text-xs text-slate-400">{dateStr}</span>
@@ -33,7 +33,7 @@ function CommentItem({ comment, allComments, onReply }) {
           
           <button 
             onClick={() => setShowReply(!showReply)}
-            className="text-xs text-orange-600 font-medium hover:text-orange-700 mt-2 transition-colors"
+            className="text-xs text-indigo-700 font-medium hover:text-indigo-800 mt-2 transition-colors"
           >
             Reply
           </button>
@@ -45,7 +45,7 @@ function CommentItem({ comment, allComments, onReply }) {
           <textarea
             autoFocus
             rows={1}
-            className="flex-1 rounded-xl border border-slate-300 p-2 text-sm focus:border-orange-500 focus:ring-1 focus:ring-orange-500 outline-none resize-none transition-all"
+            className="flex-1 rounded-xl border border-slate-300 p-2 text-sm focus:border-indigo-600 focus:ring-1 focus:ring-indigo-600 outline-none resize-none transition-all"
             placeholder="Write a reply..."
             value={replyText}
             onChange={(e) => setReplyText(e.target.value)}
@@ -97,10 +97,10 @@ export function CandidateComments({ candidateId }) {
   return (
     <div className="flex flex-col h-full space-y-4">
       {/* New Comment Input */}
-      <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100 shadow-sm flex flex-col gap-3">
+      <div className="bg-slate-50 p-4 rounded-lg border border-slate-100 shadow-sm flex flex-col gap-3">
         <textarea
           rows={3}
-          className="w-full rounded-xl border border-slate-300 p-3 text-sm focus:border-orange-500 focus:ring-2 focus:ring-orange-200 outline-none resize-none transition-all"
+          className="w-full rounded-xl border border-slate-300 p-3 text-sm focus:border-indigo-600 focus:ring-2 focus:ring-indigo-200 outline-none resize-none transition-all"
           placeholder="Add a comment about this candidate..."
           value={newComment}
           onChange={(e) => setNewComment(e.target.value)}

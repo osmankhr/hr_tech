@@ -24,7 +24,7 @@ export function CandidateProgressBar({ currentStatus }) {
         {/* Active track line */}
         {!isRejected && currentIndex > 0 && (
           <div 
-            className="absolute left-0 top-1/2 -translate-y-1/2 h-1 bg-orange-500 rounded-full z-0 transition-all duration-500 ease-in-out"
+            className="absolute left-0 top-1/2 -translate-y-1/2 h-1 bg-indigo-600 rounded-full z-0 transition-all duration-500 ease-in-out"
             style={{ width: `${(currentIndex / (STAGES.length - 1)) * 100}%` }}
           ></div>
         )}
@@ -38,8 +38,8 @@ export function CandidateProgressBar({ currentStatus }) {
             <div key={stage.id} className="relative z-10 flex flex-col items-center group">
               <div 
                 className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-semibold transition-colors duration-300 shadow-sm
-                  ${isCurrent ? 'bg-orange-600 text-white ring-4 ring-orange-100' : 
-                    isPast ? 'bg-orange-500 text-white' : 
+                  ${isCurrent ? 'bg-indigo-700 text-white ring-4 ring-indigo-100' : 
+                    isPast ? 'bg-indigo-600 text-white' : 
                     isRejected ? 'bg-slate-200 text-slate-400' : 'bg-white text-slate-400 border-2 border-slate-200'}
                 `}
               >
@@ -50,7 +50,7 @@ export function CandidateProgressBar({ currentStatus }) {
                 )}
               </div>
               <div className={`mt-2 text-xs font-medium transition-colors duration-300
-                ${isCurrent ? 'text-orange-700' : isCompleted ? 'text-slate-700' : 'text-slate-400'}
+                ${isCurrent ? 'text-indigo-700' : isCompleted ? 'text-slate-700' : 'text-slate-400'}
               `}>
                 {stage.label}
               </div>

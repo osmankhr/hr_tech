@@ -13,14 +13,14 @@ export function SkillSelector({
         Desired skills *
       </span>
 
-      <div className="rounded-2xl border border-slate-300 bg-white p-3 focus-within:border-orange-500">
+      <div className="rounded-lg border border-slate-300 bg-white p-3 focus-within:border-indigo-600">
         <div className="mb-2 flex flex-wrap gap-2">
           {selectedSkills.map((skill) => (
             <button
               key={skill}
               type="button"
               onClick={() => removeSkill(skill)}
-              className="rounded-full border border-orange-200 bg-orange-50 px-3 py-1 text-xs font-medium text-orange-700 hover:bg-orange-100"
+              className="rounded-full border border-indigo-200 bg-indigo-50 px-3 py-1 text-xs font-medium text-indigo-700 hover:bg-indigo-100"
             >
               {skill} ×
             </button>
@@ -48,7 +48,7 @@ export function SkillSelector({
             key={skill}
             type="button"
             onClick={() => addSkill(skill)}
-            className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs text-slate-700 hover:border-orange-200 hover:bg-orange-50 hover:text-orange-700"
+            className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs text-slate-700 hover:border-indigo-200 hover:bg-indigo-50 hover:text-indigo-700"
           >
             + {skill}
           </button>

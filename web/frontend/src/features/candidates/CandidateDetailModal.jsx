@@ -49,12 +49,12 @@ export function CandidateDetailModal({ candidate, scoringExplainer, onClose, onE
         <div className="shrink-0 border-b border-slate-100 pb-4 mb-4">
           <div className="flex justify-between items-start mb-4">
             <div>
-              <h4 className="text-2xl font-bold text-slate-800">{candidate.name || candidate.full_name}</h4>
+              <h4 className="text-xl font-semibold text-slate-900">{candidate.name || candidate.full_name}</h4>
               <p className="text-slate-500 font-medium">{candidate.role || candidate.current_title || "Unknown Role"}</p>
             </div>
             {candidate.profileUrl && (
               <a href={candidate.profileUrl} target="_blank" rel="noopener noreferrer">
-                <Button variant="outline" size="sm" className="text-orange-600 border-orange-200 hover:bg-orange-50">
+                <Button variant="outline" size="sm" className="text-indigo-700 border-indigo-200 hover:bg-indigo-50">
                   <svg className="w-4 h-4 mr-1 inline" fill="currentColor" viewBox="0 0 24 24"><path d="M19 0h-14c-2.761 0-5 2.239-5 5v14c0 2.761 2.239 5 5 5h14c2.762 0 5-2.239 5-5v-14c0-2.761-2.238-5-5-5zm-11 19h-3v-11h3v11zm-1.5-12.268c-.966 0-1.75-.79-1.75-1.764s.784-1.764 1.75-1.764 1.75.79 1.75 1.764-.783 1.764-1.75 1.764zm13.5 12.268h-3v-5.604c0-3.368-4-3.113-4 0v5.604h-3v-11h3v1.765c1.396-2.586 7-2.777 7 2.476v6.759z"/></svg>
                   LinkedIn
                 </Button>
@@ -87,7 +87,7 @@ export function CandidateDetailModal({ candidate, scoringExplainer, onClose, onE
               </div>
 
               {(candidate.englishConfidence || candidate.english_confidence) && (
-                <div className="rounded-2xl bg-slate-50 border border-slate-100 p-3 shadow-sm flex items-center justify-between gap-3">
+                <div className="rounded-lg bg-slate-50 border border-slate-100 p-3 shadow-sm flex items-center justify-between gap-3">
                   <div>
                     <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">
                       English Confidence
@@ -104,7 +104,7 @@ export function CandidateDetailModal({ candidate, scoringExplainer, onClose, onE
               )}
 
               {candidate.ranking && (
-                <div className="bg-slate-50 rounded-2xl p-4 border border-slate-100 shadow-sm">
+                <div className="bg-slate-50 rounded-lg p-4 border border-slate-100 shadow-sm">
                   <p className="mb-3 font-semibold text-slate-800">Explainable Score</p>
                   <div className="grid gap-3 md:grid-cols-3 mb-4">
                     <Info label="Manual Score" value={candidate.ranking.manual_score} />
@@ -133,13 +133,13 @@ export function CandidateDetailModal({ candidate, scoringExplainer, onClose, onE
                             key={featureName}
                             type="button"
                             onClick={() => setSelectedFeatureId(featureName)}
-                            className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 shadow-sm transition-all hover:-translate-y-0.5 hover:border-orange-200 hover:shadow"
+                            className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 shadow-sm transition-all hover:-translate-y-0.5 hover:border-indigo-200 hover:shadow"
                           >
                             <div className="flex items-center justify-between gap-3">
                               <span className="text-left text-sm font-medium text-slate-700">
                                 {meta?.name || humanizeFeatureName(featureName)}
                               </span>
-                              <span className="rounded-full bg-orange-50 px-2.5 py-1 text-xs font-semibold text-orange-700">
+                              <span className="rounded-full bg-indigo-50 px-2.5 py-1 text-xs font-semibold text-indigo-700">
                                 {weightedScore}
                               </span>
                             </div>
@@ -188,7 +188,7 @@ export function CandidateDetailModal({ candidate, scoringExplainer, onClose, onE
                 <p className="mb-2 font-semibold text-slate-800">Skills</p>
                 <div className="flex flex-wrap gap-2">
                   {(candidate.skills || []).map((skill) => (
-                    <Badge key={skill} tone="orange">{skill}</Badge>
+                    <Badge key={skill} tone="brand">{skill}</Badge>
                   ))}
                   {(!candidate.skills || candidate.skills.length === 0) && (
                     <span className="text-slate-400 text-sm italic">No skills listed.</span>
@@ -198,7 +198,7 @@ export function CandidateDetailModal({ candidate, scoringExplainer, onClose, onE
 
               <div>
                 <p className="mb-2 font-semibold text-slate-800">Notes</p>
-                <div className="rounded-2xl bg-slate-50 p-4 border border-slate-100 text-slate-700 text-sm shadow-inner min-h-[80px]">
+                <div className="rounded-lg bg-slate-50 p-4 border border-slate-100 text-slate-700 text-sm shadow-inner min-h-[80px]">
                   {candidate.notes || <span className="text-slate-400 italic">No notes available.</span>}
                 </div>
               </div>
@@ -242,7 +242,7 @@ export function CandidateDetailModal({ candidate, scoringExplainer, onClose, onE
 function FeatureAssessmentContent({ featureId, assessment, meta }) {
   if (!assessment) {
     return (
-      <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+      <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
         No assessment details found for {meta?.name || humanizeFeatureName(featureId)}.
       </div>
     );
@@ -253,7 +253,7 @@ function FeatureAssessmentContent({ featureId, assessment, meta }) {
   return (
     <div className="space-y-4">
       {(meta?.description || meta?.reason) && (
-        <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3">
+        <div className="rounded-lg border border-slate-200 bg-white px-4 py-3">
           {meta?.description && (
             <p className="text-sm text-slate-700">{meta.description}</p>
           )}
@@ -263,7 +263,7 @@ function FeatureAssessmentContent({ featureId, assessment, meta }) {
         </div>
       )}
 
-      <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+      <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3">
         <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Score</p>
         <p className="mt-1 text-base font-semibold text-slate-900">
           {formatNumber(assessment.raw_points)} / {formatNumber(assessment.max_points)}
@@ -273,7 +273,7 @@ function FeatureAssessmentContent({ featureId, assessment, meta }) {
 
       <div>
         <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-500">Evidence</p>
-        <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3">
+        <div className="rounded-lg border border-slate-200 bg-white px-4 py-3">
           {evidences.length > 0 ? (
             <ul className="list-disc space-y-2 pl-5 text-sm text-slate-700">
               {evidences.map((item, index) => (
@@ -288,7 +288,7 @@ function FeatureAssessmentContent({ featureId, assessment, meta }) {
 
       <div>
         <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-500">Notes</p>
-        <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-700">
+        <div className="rounded-lg border border-slate-200 bg-white px-4 py-3 text-sm text-slate-700">
           {assessment.notes || <span className="italic text-slate-400">No notes provided.</span>}
         </div>
       </div>
@@ -302,7 +302,7 @@ function TabButton({ active, onClick, children }) {
       onClick={onClick}
       className={`pb-3 px-2 text-sm font-semibold transition-all border-b-2 ${
         active 
-          ? "border-orange-500 text-orange-600" 
+          ? "border-indigo-600 text-indigo-700" 
           : "border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300"
       }`}
     >
@@ -318,7 +318,7 @@ function EnglishConfidenceBadge({ value }) {
 
 function Info({ label, value }) {
   return (
-    <div className="rounded-2xl bg-slate-50 border border-slate-100 p-3 shadow-sm transition-all hover:shadow-md">
+    <div className="rounded-lg bg-slate-50 border border-slate-100 p-3 shadow-sm transition-all hover:shadow-md">
       <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">{label}</p>
       <p className="font-medium text-slate-900">{value || "-"}</p>
     </div>

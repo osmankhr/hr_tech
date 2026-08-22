@@ -13,7 +13,7 @@ export function CampaignDeleteModal({
   return (
     <Modal title="Delete Campaign" onClose={onCancel} size="max-w-2xl">
       <div className="space-y-4 text-sm">
-        <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-red-800">
+        <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-red-800">
           <p className="font-semibold">This action cannot be undone.</p>
           <p className="mt-1 text-red-700">
             Deleting this campaign will remove linked candidates from the database and delete
@@ -21,7 +21,7 @@ export function CampaignDeleteModal({
           </p>
         </div>
 
-        <div className="rounded-2xl bg-slate-50 p-4">
+        <div className="rounded-lg bg-slate-50 p-4">
           <p className="text-xs uppercase tracking-wide text-slate-500">Campaign</p>
           <p className="mt-1 text-base font-semibold text-slate-900">
             {campaign.campaignName || "Unnamed Campaign"}
@@ -32,7 +32,7 @@ export function CampaignDeleteModal({
         </div>
 
         {error && (
-          <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+          <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
             {error}
           </div>
         )}

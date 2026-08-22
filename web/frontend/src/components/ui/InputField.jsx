@@ -14,7 +14,7 @@ export function InputField({
       <input
         type={type}
         min={min}
-        className="w-full rounded-2xl border border-slate-300 px-4 py-3 text-sm outline-none focus:border-orange-500"
+        className="w-full rounded-lg border border-slate-300 px-4 py-3 text-sm outline-none focus:border-indigo-600"
         placeholder={placeholder}
         value={value}
         onChange={(event) => onChange(event.target.value)}
