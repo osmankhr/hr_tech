@@ -138,14 +138,30 @@ class CandidateFilter:
     def run(self) -> list[dict[str, Any]]:
         all_candidates = self._load_all_candidates()
 
-        # Sort by Exa relevance score and cap at max_candidates
-        all_candidates.sort(key=lambda c: c.get("score") or 0, reverse=True)
-        to_review = all_candidates[: self.max_candidates]
-        skipped = all_candidates[self.max_candidates :]
+        # Cap max_candidates per search location (search_bucket), not once across every
+        # location's candidates pooled together. A shared global cap meant adding more
+        # locations to a campaign silently shrank how many candidates from any single
+        # location got reviewed — e.g. a 2-location "global" run (Turkey + US) could end up
+        # reviewing fewer Turkey candidates than a Turkey-only run with the same
+        # max_candidates value, since Turkey and US candidates competed for the same shared
+        # budget on raw Exa relevance score. Capping per bucket means adding a location only
+        # adds coverage, it never steals budget from an existing one.
+        by_bucket: dict[str, list[dict[str, Any]]] = {}
+        for candidate in all_candidates:
+            bucket = candidate.get("search_bucket") or "unknown"
+            by_bucket.setdefault(bucket, []).append(candidate)
+
+        to_review: list[dict[str, Any]] = []
+        skipped: list[dict[str, Any]] = []
+        for bucket_candidates in by_bucket.values():
+            bucket_candidates.sort(key=lambda c: c.get("score") or 0, reverse=True)
+            to_review.extend(bucket_candidates[: self.max_candidates])
+            skipped.extend(bucket_candidates[self.max_candidates :])
 
         logger.info(
-            "Reviewing %d candidates (cap=%d, skipped=%d)",
+            "Reviewing %d candidates across %d location(s) (cap=%d per location, skipped=%d)",
             len(to_review),
+            len(by_bucket),
             self.max_candidates,
             len(skipped),
         )

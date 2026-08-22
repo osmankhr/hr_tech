@@ -18,10 +18,28 @@ Data Engineer roles), Emine (Chapter Lead Solution Architect, DevOps Engineer ro
 
 ## Bugs (high priority — incorrect behavior, not just rough UX)
 
-- [ ] **Location filter appears inverted.** Running the identical search scoped to "Turkey only"
+- [x] **Location filter appears inverted.** ~~Running the identical search scoped to "Turkey only"
       vs. "global" returned *more* results for the Turkey-only scope than the global scope —
-      opposite of expected. Re-check the location filter logic (likely a scope/exclusion mix-up
-      rather than a ranking issue, since the count itself is wrong, not just the ordering).
+      opposite of expected.~~ **Root cause found and fixed (2026-08-22).** Not a location-matching
+      bug — `filter.py`'s `max_candidates` cap (the number of candidates that get AI-reviewed) was
+      applied once across *all* locations pooled together and globally sorted by raw Exa relevance
+      score, instead of per location. A campaign configured with e.g. `turkey` + `us` (what
+      recruiters call "global" — see note below) had its Turkey and US candidates compete for the
+      same shared review budget; if Exa happened to rank the other location's candidates higher,
+      Turkey could lose most or all of its share, so a "global" run reviewed *fewer* Turkey
+      candidates than a Turkey-only run got with the full budget to itself. Reproduced in a unit
+      test: 5 Turkey + 5 US candidates, `max_candidates=3`, Turkey scored lower — old logic reviewed
+      **0** Turkey candidates; fixed logic reviews 3 Turkey + 3 US (one budget per `search_bucket`,
+      so adding a location only adds coverage, never steals it from another). Single-location
+      campaigns are unaffected (verified — same top-N-by-score result as before).
+      Real-world impact: checked all campaigns on disk — **17 of ~20** are multi-location
+      (`turkey` + `us`/`ue`), so this was very likely happening broadly, not just in the reported
+      case. Existing campaigns' `filtered_results.json` was generated under the old shared-budget
+      logic; re-run the filter step on any campaign where location coverage matters to get results
+      under the fixed logic.
+      Side note for whoever owns campaign setup: there's no dedicated "global" mode — recruiters
+      configure it themselves as a location list (e.g. `turkey` + `us`), so "global" in the feedback
+      really meant "2 hardcoded regions," not worldwide. Out of scope for this fix, but worth knowing.
       — MLE feedback (Kagan)
 
 - [ ] **Name-matching breaks the profile link for non-exact-match full names.** Top-ranked
@@ -162,7 +180,7 @@ Data Engineer roles), Emine (Chapter Lead Solution Architect, DevOps Engineer ro
 ## Suggested priority for next iteration
 
 1. ~~Auto-tagging fix~~ — done 2026-08-22.
-2. Location filter bug (Turkey vs. global count inversion — concrete, reproducible)
+2. ~~Location filter bug (Turkey vs. global count inversion)~~ — done 2026-08-22.
 3. Exclude-current-ING-employee filter (clear, scoped ask; workaround already found via prompt)
 4. Similarity score transparency + investigate the MC/SM exclusion case specifically
 5. Name-matching bug (GS/GUS profile link) — likely narrow fix, but breaks trust when it happens
