@@ -1,4 +1,5 @@
 import { httpClient } from "./httpClient";
+import { API_BASE_URL } from "../config/api";
 
 export const campaignApi = {
   getAll() {
@@ -42,13 +43,24 @@ export const campaignApi = {
     return httpClient.get(`/campaigns/${id}/pipeline/runs`);
   },
 
+  getSearchResultsStatus(id) {
+    return httpClient.get(`/campaigns/${id}/pipeline/search-results-status`);
+  },
+
+  getRankedResultsStatus(id) {
+    return httpClient.get(`/campaigns/${id}/pipeline/ranked-results-status`);
+  },
+
   getRankings(id) {
     return httpClient.get(`/campaigns/${id}/rankings`);
   },
 
-  runPipeline(id, runType = "full") {
+  runPipeline(id, runType = "full", maxCandidates = null) {
     const formData = new FormData();
     formData.append("run_type", runType);
+    if (maxCandidates !== null && maxCandidates !== undefined) {
+      formData.append("max_candidates", String(maxCandidates));
+    }
     return httpClient.post(`/campaigns/${id}/pipeline/run`, formData);
   },
 
@@ -56,5 +68,73 @@ export const campaignApi = {
     return httpClient.get(
       `/campaigns/${id}/candidates?page=${page}&page_size=${pageSize}`
     );
+  },
+
+  async exportRankedCsv(id) {
+    const token = localStorage.getItem("hr_auth_token") || "";
+
+    const response = await fetch(
+      `${API_BASE_URL}/campaigns/${id}/pipeline/export-ranked-csv`,
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      }
+    );
+
+    if (!response.ok) {
+      let message = "CSV export failed";
+      try {
+        const errorBody = await response.json();
+        message = errorBody.detail || errorBody.message || message;
+      } catch {
+        message = response.statusText || message;
+      }
+      throw new Error(message);
+    }
+
+    const blob = await response.blob();
+    const objectUrl = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = objectUrl;
+    anchor.download = `campaign_${id}_ranked_results.csv`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(objectUrl);
+  },
+
+  async exportSearchCsv(id) {
+    const token = localStorage.getItem("hr_auth_token") || "";
+
+    const response = await fetch(
+      `${API_BASE_URL}/campaigns/${id}/pipeline/export-search-csv`,
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      }
+    );
+
+    if (!response.ok) {
+      let message = "CSV export failed";
+      try {
+        const errorBody = await response.json();
+        message = errorBody.detail || errorBody.message || message;
+      } catch {
+        message = response.statusText || message;
+      }
+      throw new Error(message);
+    }
+
+    const blob = await response.blob();
+    const objectUrl = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = objectUrl;
+    anchor.download = `campaign_${id}_search_results.csv`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(objectUrl);
   },
 };

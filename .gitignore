@@ -24,5 +24,15 @@ candidate_pool/campaigns/*/data/
 candidate_pool/campaigns/*/output/
 candidate_pool/campaigns/*/logs/
 
+# candidate_pool local campaign folders to keep out of git
+candidate_pool/campaigns/*
+
+# allowlist: keep these campaign folders commit-able
+!candidate_pool/campaigns/example_2026-06-09/
+!candidate_pool/campaigns/example_2026-06-09/**
+
+# candidate_pool local lockfile
+candidate_pool/uv.lock
+
 # OS
 .DS_Store

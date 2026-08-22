@@ -10,6 +10,7 @@ export function CampaignPanel({
   onViewDetails,
   onEditCampaign,
   onDeleteCampaign,
+  renderExtraActions,
 }) {
   return (
     <Card className="p-5">
@@ -34,6 +35,7 @@ export function CampaignPanel({
             onViewDetails={onViewDetails}
             onEdit={onEditCampaign}
             onDelete={onDeleteCampaign}
+            extraActions={renderExtraActions ? renderExtraActions(campaign) : null}
           />
         ))}
 
