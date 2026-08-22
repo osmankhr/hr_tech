@@ -1267,6 +1267,69 @@ def _resolve_search_results_files(conn, campaign_id: int, current_user) -> list[
     return sorted(data_dir.glob("*/raw_results.json"))
 
 
+@app.get("/api/campaigns/{campaign_id}/pipeline/scoring-explainer")
+def get_scoring_explainer(
+    campaign_id: int,
+    current_user=Depends(get_current_user),
+):
+    """Feature schema + scoring policy for this campaign, so the UI can show *why* each
+    feature exists (name/description/reason) and how much it weighs — not just a bare
+    feature_id and a number. Recruiters otherwise have no way to tell what a score is
+    actually measuring or how it was weighted."""
+    conn = get_connection()
+    try:
+        pipeline_dir = _resolve_pipeline_dir(conn, campaign_id, current_user)
+    finally:
+        conn.close()
+
+    schema_path = pipeline_dir / "data" / "ranking_feature_schema.json"
+    policy_path = pipeline_dir / "data" / "ranking_scoring_policy.json"
+
+    feature_schema = {}
+    if schema_path.exists():
+        try:
+            feature_schema = json.loads(schema_path.read_text(encoding="utf-8"))
+        except Exception:
+            feature_schema = {}
+
+    scoring_policy = {}
+    if policy_path.exists():
+        try:
+            scoring_policy = json.loads(policy_path.read_text(encoding="utf-8"))
+        except Exception:
+            scoring_policy = {}
+
+    features = feature_schema.get("features") if isinstance(feature_schema, dict) else None
+    features = features if isinstance(features, list) else []
+    weights = scoring_policy.get("weights") if isinstance(scoring_policy, dict) else None
+    weights = weights if isinstance(weights, dict) else {}
+    hard_gates = scoring_policy.get("hard_gates") if isinstance(scoring_policy, dict) else None
+    hard_gates = hard_gates if isinstance(hard_gates, list) else []
+
+    features_by_id = {}
+    for feat in features:
+        if not isinstance(feat, dict) or not feat.get("id"):
+            continue
+        fid = str(feat["id"])
+        features_by_id[fid] = {
+            "id": fid,
+            "name": feat.get("name") or fid,
+            "description": feat.get("description") or "",
+            "reason": feat.get("reason") or "",
+            "max_points": feat.get("max_points"),
+            "weight_pct": weights.get(fid),
+        }
+
+    return {
+        "exists": bool(features_by_id),
+        "features": list(features_by_id.values()),
+        "hard_gates": hard_gates,
+        "tiers": scoring_policy.get("tiers") if isinstance(scoring_policy, dict) else None,
+        "capabilities": feature_schema.get("capabilities") if isinstance(feature_schema, dict) else [],
+        "schema_fallback": bool(feature_schema.get("fallback")) if isinstance(feature_schema, dict) else False,
+    }
+
+
 @app.get("/api/campaigns/{campaign_id}/pipeline/search-results-status")
 def get_search_results_status(
     campaign_id: int,

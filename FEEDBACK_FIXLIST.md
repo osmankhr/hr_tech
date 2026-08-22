@@ -42,12 +42,12 @@ Data Engineer roles), Emine (Chapter Lead Solution Architect, DevOps Engineer ro
       really meant "2 hardcoded regions," not worldwide. Out of scope for this fix, but worth knowing.
       — MLE feedback (Kagan)
 
-- [ ] **Name-matching breaks the profile link for non-exact-match full names.** Top-ranked
+- [ ] **Name-matching breaks the profile link for non-exact-match full names.** ~~Top-ranked
       candidate for the Chapter Lead search was displayed as "GS" with an 89% match, but the
-      candidate's full name is actually "GUS" — the profile link didn't resolve and the candidate
-      had to be found via manual search instead. Check whatever name-normalization/matching step
-      produces the display name and the profile URL; they're drifting out of sync for at least one
-      real case.
+      candidate's full name is actually "GUS" — the profile link didn't resolve~~. **Dropped for
+      now (2026-08-22)** — "GS" was an abbreviation of the reviewer's own note, not necessarily a
+      real system bug; deprioritized pending clearer repro. Revisit if it recurs with a concrete
+      example.
       — Data & AI Chapter Lead feedback (Kagan)
 
 - [x] **Auto-tagging applies NLP/LLM/Python tags independent of role content.** ~~Confirmed on two
@@ -78,16 +78,33 @@ Data Engineer roles), Emine (Chapter Lead Solution Architect, DevOps Engineer ro
 
 ## Transparency / explainability (recruiters don't trust or understand the scoring)
 
-- [ ] **Similarity/match score is a black box.** Recruiters have no visibility into what drives the
-      %, and it's producing results that look wrong on inspection:
-      - Chapter Lead search: top candidate scored 89% despite having no engineering background —
-        higher than expected once the reviewer actually read the profile.
-      - Same search: internal manager-based reference similarities were shown (UU 74%, MY 50%,
-        ES 41%, OK 38%) but two people the reviewer expected to rank highly as reference points for
-        this specific role — MC and SM — didn't appear in results at all.
-      Needs: (1) expose the scoring breakdown (title match / skills / experience / org data weights)
-      in the UI or an explain endpoint, (2) investigate specifically why MC and SM were excluded —
-      that's a concrete, debuggable case, not just a vague "scores feel off" complaint.
+- [x] **Similarity/match score is a black box.** ~~Recruiters have no visibility into what drives
+      the %~~ — **partially fixed 2026-08-22** (the "expose the scoring breakdown" half; the MC/SM
+      exclusion investigation was dropped per instruction, not pursued).
+      What was actually missing: the *data* to explain a score already existed end-to-end —
+      `feature_designer_agent.py` generates a `name`/`description`/`reason` for every scoring
+      feature, and `scoring_designer_agent.py` normalizes weights to a 0–100% split — but none of
+      it ever reached the web app. The UI only ever showed a raw internal `feature_id` (naively
+      humanized, e.g. `gcp_depth` → "Gcp Depth") next to a number, with no weight %, no description
+      of what the feature measures, and no explanation of why it was chosen for this role. That's
+      the actual "black box": not missing data, missing plumbing.
+      Fix: added `GET /api/campaigns/{id}/pipeline/scoring-explainer`, which reads a campaign's
+      `ranking_feature_schema.json` + `ranking_scoring_policy.json` and returns each feature's
+      name/description/reason/weight-%, plus hard gates and score tiers. Wired into
+      `CandidateDetailModal`: the feature-contribution buttons now show the real feature name and
+      "N% of total score — <description>" instead of a humanized ID, and clicking into a feature
+      shows its description and "why this feature" reasoning above the evidence. Hard gates (rules
+      that can override the weighted score, e.g. location requirements) are now listed on the
+      candidate detail panel instead of being invisible. As a bonus, if a campaign's feature schema
+      ever falls back to the generic schema (see the auto-tagging fix above), that's now shown to
+      the recruiter directly on the candidate panel instead of silently producing a plausible-
+      looking but unexplained score.
+      Verified: called the new endpoint directly against a real campaign (`mle-engineer`, 9
+      features, 10 hard gates) — correct name/description/reason/weight_pct per feature; ownership
+      check confirmed (a non-owning user gets 404, same as the rest of the API); frontend build
+      passes.
+      Not done: the MC/SM exclusion investigation (why two specific expected reference candidates
+      never appeared in a past search) — user said to drop this for now.
       — Data & AI Chapter Lead feedback (Kagan)
 
 - [ ] **"Target Profiles" parameter has no observable effect.** Reviewer varied it up and down and
@@ -202,7 +219,7 @@ Data Engineer roles), Emine (Chapter Lead Solution Architect, DevOps Engineer ro
 1. ~~Auto-tagging fix~~ — done 2026-08-22.
 2. ~~Location filter bug (Turkey vs. global count inversion)~~ — done 2026-08-22.
 3. ~~Exclude-current-ING-employee filter~~ — done 2026-08-22.
-4. Similarity score transparency + investigate the MC/SM exclusion case specifically
-5. Name-matching bug (GS/GUS profile link) — likely narrow fix, but breaks trust when it happens
+4. ~~Similarity score transparency~~ — done 2026-08-22 (MC/SM exclusion investigation dropped).
+5. ~~Name-matching bug (GS/GUS profile link)~~ — dropped 2026-08-22, not a confirmed real bug.
 6. Everything else (tag taxonomy expansion, ATS enrichment, English confidence score, target
    profiles / example CV clarity, performance) — larger scope, sequence after the above.

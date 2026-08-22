@@ -113,6 +113,7 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
   const [deleteError, setDeleteError] = useState("");
   const [selectedCandidate, setSelectedCandidate] = useState(null);
   const [editingCandidate, setEditingCandidate] = useState(null);
+  const [scoringExplainer, setScoringExplainer] = useState(null);
 
   const [dashboardCampaignId, setDashboardCampaignId] = useState("");
   const [dashboardCandidates, setDashboardCandidates] = useState([]);
@@ -311,6 +312,27 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
 
     load();
   }, [dashboardCampaignId, dashboardPage, setApiError]);
+
+  useEffect(() => {
+    if (!dashboardCampaignId) {
+      setScoringExplainer(null);
+      return;
+    }
+
+    let cancelled = false;
+    campaignApi
+      .getScoringExplainer(dashboardCampaignId)
+      .then((data) => {
+        if (!cancelled) setScoringExplainer(data);
+      })
+      .catch(() => {
+        if (!cancelled) setScoringExplainer(null);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [dashboardCampaignId]);
 
   useEffect(() => {
     if (!pipelineCampaignId) {
@@ -1143,6 +1165,7 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
 
       <CandidateDetailModal
         candidate={selectedCandidate}
+        scoringExplainer={scoringExplainer}
         onClose={() => setSelectedCandidate(null)}
         onEdit={(candidate) => {
           setSelectedCandidate(null);

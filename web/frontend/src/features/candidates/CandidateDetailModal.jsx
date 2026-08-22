@@ -6,7 +6,7 @@ import { CandidateProgressBar } from "./CandidateProgressBar";
 import { CandidateComments } from "./CandidateComments";
 import { CandidateActivityLog } from "./CandidateActivityLog";
 
-export function CandidateDetailModal({ candidate, onClose, onEdit }) {
+export function CandidateDetailModal({ candidate, scoringExplainer, onClose, onEdit }) {
   const [activeTab, setActiveTab] = useState("details");
   const [selectedFeatureId, setSelectedFeatureId] = useState(null);
 
@@ -24,6 +24,16 @@ export function CandidateDetailModal({ candidate, onClose, onEdit }) {
     });
     return byId;
   }, [featureAssessments]);
+
+  const featureMetaById = useMemo(() => {
+    const byId = new Map();
+    (scoringExplainer?.features || []).forEach((feature) => {
+      if (feature?.id) {
+        byId.set(feature.id, feature);
+      }
+    });
+    return byId;
+  }, [scoringExplainer]);
 
   const selectedFeatureAssessment = selectedFeatureId
     ? assessmentsByFeatureId.get(selectedFeatureId) || null
@@ -91,6 +101,7 @@ export function CandidateDetailModal({ candidate, onClose, onEdit }) {
                     <div className="grid gap-2">
                       {Object.entries(candidate.ranking.feature_contributions || {}).map(([featureName, weightedPoints]) => {
                         const assessment = assessmentsByFeatureId.get(featureName);
+                        const meta = featureMetaById.get(featureName);
                         const weightedMax = getWeightedMaxPoints(
                           candidate?.ranking?.manual,
                           featureName,
@@ -98,6 +109,7 @@ export function CandidateDetailModal({ candidate, onClose, onEdit }) {
                           assessment
                         );
                         const weightedScore = formatFeatureScore(weightedPoints, weightedMax);
+                        const weightPct = meta?.weight_pct;
 
                         return (
                           <button
@@ -108,14 +120,17 @@ export function CandidateDetailModal({ candidate, onClose, onEdit }) {
                           >
                             <div className="flex items-center justify-between gap-3">
                               <span className="text-left text-sm font-medium text-slate-700">
-                                {humanizeFeatureName(featureName)}
+                                {meta?.name || humanizeFeatureName(featureName)}
                               </span>
                               <span className="rounded-full bg-orange-50 px-2.5 py-1 text-xs font-semibold text-orange-700">
                                 {weightedScore}
                               </span>
                             </div>
                             <div className="mt-1 text-left text-xs text-slate-500">
-                              Weighted score out of max contribution
+                              {Number.isFinite(Number(weightPct))
+                                ? `${Number(weightPct)}% of total score`
+                                : "Weighted score out of max contribution"}
+                              {meta?.description ? ` — ${meta.description}` : ""}
                             </div>
                           </button>
                         );
@@ -125,6 +140,30 @@ export function CandidateDetailModal({ candidate, onClose, onEdit }) {
                       Click any feature to view evidence and notes.
                     </p>
                   </div>
+
+                  {(scoringExplainer?.hard_gates || []).length > 0 && (
+                    <div className="mt-4 border-t border-slate-200 pt-3">
+                      <p className="mb-2 text-xs uppercase tracking-wider text-slate-500 font-semibold">
+                        Hard Gates (can override the weighted score)
+                      </p>
+                      <div className="space-y-1">
+                        {scoringExplainer.hard_gates.map((gate, index) => (
+                          <p key={gate.id || index} className="text-xs text-slate-600">
+                            <span className="font-semibold text-slate-700">{gate.penalty || "GATE"}:</span>{" "}
+                            {gate.description || gate.trigger_rule || "No description provided."}
+                          </p>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {scoringExplainer?.schema_fallback && (
+                    <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                      This campaign's scoring criteria could not be generated from the job
+                      description (AI feature design failed), so it's using a generic fallback
+                      schema instead of role-specific features. Re-run the pipeline to retry.
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -166,13 +205,16 @@ export function CandidateDetailModal({ candidate, onClose, onEdit }) {
 
       {selectedFeatureId && (
         <Modal
-          title={`Feature Assessment: ${humanizeFeatureName(selectedFeatureId)}`}
+          title={`Feature Assessment: ${
+            featureMetaById.get(selectedFeatureId)?.name || humanizeFeatureName(selectedFeatureId)
+          }`}
           onClose={() => setSelectedFeatureId(null)}
           size="max-w-2xl"
         >
           <FeatureAssessmentContent
             featureId={selectedFeatureId}
             assessment={selectedFeatureAssessment}
+            meta={featureMetaById.get(selectedFeatureId)}
           />
         </Modal>
       )}
@@ -180,11 +222,11 @@ export function CandidateDetailModal({ candidate, onClose, onEdit }) {
   );
 }
 
-function FeatureAssessmentContent({ featureId, assessment }) {
+function FeatureAssessmentContent({ featureId, assessment, meta }) {
   if (!assessment) {
     return (
       <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-        No assessment details found for {humanizeFeatureName(featureId)}.
+        No assessment details found for {meta?.name || humanizeFeatureName(featureId)}.
       </div>
     );
   }
@@ -193,10 +235,22 @@ function FeatureAssessmentContent({ featureId, assessment }) {
 
   return (
     <div className="space-y-4">
+      {(meta?.description || meta?.reason) && (
+        <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3">
+          {meta?.description && (
+            <p className="text-sm text-slate-700">{meta.description}</p>
+          )}
+          {meta?.reason && (
+            <p className="mt-1 text-xs italic text-slate-500">Why this feature: {meta.reason}</p>
+          )}
+        </div>
+      )}
+
       <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
         <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Score</p>
         <p className="mt-1 text-base font-semibold text-slate-900">
           {formatNumber(assessment.raw_points)} / {formatNumber(assessment.max_points)}
+          {Number.isFinite(Number(meta?.weight_pct)) ? ` (${Number(meta.weight_pct)}% of total score)` : ""}
         </p>
       </div>
 
