@@ -1416,6 +1416,34 @@ def get_scoring_explainer(
     }
 
 
+@app.get("/api/campaigns/{campaign_id}/pipeline/usage-summary")
+def get_usage_summary_endpoint(
+    campaign_id: int,
+    current_user=Depends(get_current_user),
+):
+    """LLM cost/token usage for this campaign's most recent pipeline run.
+
+    Written by run_campaign.py at the end of each run to data/usage_summary.json. Older
+    campaigns run before this was added won't have the file yet -- exists=False in that case.
+    """
+    conn = get_connection()
+    try:
+        pipeline_dir = _resolve_pipeline_dir(conn, campaign_id, current_user)
+    finally:
+        conn.close()
+
+    usage_path = pipeline_dir / "data" / "usage_summary.json"
+    if not usage_path.exists():
+        return {"exists": False}
+
+    try:
+        usage = json.loads(usage_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {"exists": False}
+
+    return {"exists": True, **usage}
+
+
 @app.get("/api/campaigns/{campaign_id}/pipeline/search-results-status")
 def get_search_results_status(
     campaign_id: int,

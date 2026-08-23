@@ -107,7 +107,11 @@ class CandidateFilter:
         filter_cfg = config.get("filter", {})
         self.model = filter_cfg.get("model", "claude-sonnet-5")
         self.max_candidates = filter_cfg.get("max_candidates", 100)
-        self.max_workers = max(1, int(filter_cfg.get("max_workers", 6)))
+        # Filter calls are I/O-bound (waiting on the model), so concurrency scales close to
+        # linearly. This stage measured as ~60% of total pipeline wall-clock time on real
+        # campaigns at the old default of 6 workers, while ranking (default ~50 workers) barely
+        # registers despite doing comparable work — raising this to match is the direct fix.
+        self.max_workers = max(1, int(filter_cfg.get("max_workers", 20)))
 
         criteria_path = campaign_dir / "input" / "filter_criteria.md"
         if not criteria_path.exists():

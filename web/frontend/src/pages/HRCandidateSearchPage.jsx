@@ -115,6 +115,7 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
   const [selectedCandidate, setSelectedCandidate] = useState(null);
   const [editingCandidate, setEditingCandidate] = useState(null);
   const [scoringExplainer, setScoringExplainer] = useState(null);
+  const [usageSummary, setUsageSummary] = useState(null);
 
   const [dashboardCampaignId, setDashboardCampaignId] = useState("");
   const [dashboardCandidates, setDashboardCandidates] = useState([]);
@@ -355,6 +356,18 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
 
     load();
   }, [pipelineCampaignId]);
+
+  useEffect(() => {
+    if (!pipelineCampaignId) {
+      setUsageSummary(null);
+      return;
+    }
+
+    campaignApi
+      .getUsageSummary(pipelineCampaignId)
+      .then((data) => setUsageSummary(data))
+      .catch(() => setUsageSummary(null));
+  }, [pipelineCampaignId, pipelineRuns.length]);
 
   useEffect(() => {
     if (!pipelineCampaignId) {
@@ -1036,6 +1049,37 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
                   </button>
                 </div>
               </Card>
+
+              {usageSummary?.exists && (
+                <Card className="p-5">
+                  <h3 className="text-base font-semibold text-slate-900">LLM Usage (Most Recent Run)</h3>
+                  <p className="mb-4 text-sm text-slate-500">
+                    Cost and token usage for the last pipeline run of this campaign.
+                  </p>
+                  <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                    <div className="rounded-lg bg-slate-50 p-3">
+                      <p className="text-xs text-slate-500">Cost</p>
+                      <p className="text-lg font-semibold text-slate-900">
+                        ${(usageSummary.cost_usd || 0).toFixed(2)}
+                      </p>
+                    </div>
+                    <div className="rounded-lg bg-slate-50 p-3">
+                      <p className="text-xs text-slate-500">Model Calls</p>
+                      <p className="text-lg font-semibold text-slate-900">{usageSummary.calls || 0}</p>
+                    </div>
+                    <div className="rounded-lg bg-slate-50 p-3">
+                      <p className="text-xs text-slate-500">Tokens (in/out)</p>
+                      <p className="text-lg font-semibold text-slate-900">
+                        {(usageSummary.input_tokens || 0).toLocaleString()} / {(usageSummary.output_tokens || 0).toLocaleString()}
+                      </p>
+                    </div>
+                    <div className="rounded-lg bg-slate-50 p-3">
+                      <p className="text-xs text-slate-500">Errors</p>
+                      <p className="text-lg font-semibold text-slate-900">{usageSummary.errors || 0}</p>
+                    </div>
+                  </div>
+                </Card>
+              )}
 
               <Card className="p-5">
                 <h3 className="text-base font-semibold text-slate-900">Run Timeline</h3>

@@ -11,6 +11,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import sys
 from datetime import datetime
@@ -101,6 +102,10 @@ def main() -> None:
     _setup_logging(campaign_dir / "logs")
     logger = logging.getLogger(__name__)
     logger.info("Campaign: %s", config.get("name", campaign_dir.name))
+
+    from llm_provider import reset_usage_summary
+
+    reset_usage_summary()
     if any(
         value is not None
         for value in [
@@ -163,6 +168,22 @@ def main() -> None:
         logger.info("=== REPORT PHASE ===")
         shortlist_path = ReportGenerator(campaign_dir, config).run()
         logger.info("Report complete: %s", shortlist_path)
+
+    from llm_provider import get_usage_summary
+
+    usage = get_usage_summary()
+    usage_path = campaign_dir / "data" / "usage_summary.json"
+    usage_path.parent.mkdir(parents=True, exist_ok=True)
+    usage_path.write_text(json.dumps(usage, indent=2), encoding="utf-8")
+    logger.info(
+        "LLM usage this run: %d calls (%d errors), $%.4f, %d input + %d output + %d cache tokens",
+        usage["calls"],
+        usage["errors"],
+        usage["cost_usd"],
+        usage["input_tokens"],
+        usage["output_tokens"],
+        usage["cache_creation_input_tokens"],
+    )
 
     logger.info("Campaign finished.")
 

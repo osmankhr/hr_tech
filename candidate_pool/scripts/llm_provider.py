@@ -5,15 +5,58 @@ auto-select based on known local git/GitHub account names.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import subprocess
+import threading
 from functools import lru_cache
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
 COPILOT_FIXED_MODEL = "openai/gpt-5.3-codex"
+
+# Cost/token usage was previously not captured at all -- `claude --print` was called without
+# --output-format json, so the CLI's cost/usage data was thrown away, not just unlogged. This
+# accumulates it across every Claude CLI call in a pipeline run (filter.py, generate_queries.py,
+# and the ranking agents all funnel through call_model_text). Thread-safe since filter.py and
+# the ranking pipeline call this concurrently via ThreadPoolExecutor.
+_usage_lock = threading.Lock()
+_usage_totals: dict[str, Any] = {
+    "calls": 0,
+    "errors": 0,
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "cache_creation_input_tokens": 0,
+    "cost_usd": 0.0,
+    "duration_ms": 0,
+}
+
+
+def get_usage_summary() -> dict[str, Any]:
+    """Return a snapshot of accumulated usage since the last reset_usage_summary()."""
+    with _usage_lock:
+        return dict(_usage_totals)
+
+
+def reset_usage_summary() -> None:
+    """Clear accumulated usage -- call at the start of a pipeline run for a clean per-run total."""
+    with _usage_lock:
+        for key in _usage_totals:
+            _usage_totals[key] = 0 if not isinstance(_usage_totals[key], float) else 0.0
+
+
+def _record_usage(usage_json: dict[str, Any]) -> None:
+    usage = usage_json.get("usage") or {}
+    with _usage_lock:
+        _usage_totals["calls"] += 1
+        _usage_totals["input_tokens"] += int(usage.get("input_tokens") or 0)
+        _usage_totals["output_tokens"] += int(usage.get("output_tokens") or 0)
+        _usage_totals["cache_creation_input_tokens"] += int(usage.get("cache_creation_input_tokens") or 0)
+        _usage_totals["cost_usd"] += float(usage_json.get("total_cost_usd") or 0.0)
+        _usage_totals["duration_ms"] += int(usage_json.get("duration_ms") or 0)
 
 
 def _run_text(cmd: list[str], cwd: Path | None = None) -> str:
@@ -114,7 +157,7 @@ def call_model_text(*, prompt: str, model: str, system: str | None, timeout: int
             logger.exception("Copilot/GitHub Models call failed")
             return None
 
-    cmd = ["claude", "--print", "--model", model, "--tools", ""]
+    cmd = ["claude", "--print", "--model", model, "--tools", "", "--output-format", "json"]
     if system:
         cmd += ["--system-prompt", system]
 
@@ -131,9 +174,40 @@ def call_model_text(*, prompt: str, model: str, system: str | None, timeout: int
         return None
     except subprocess.TimeoutExpired:
         logger.warning("claude CLI timed out")
+        with _usage_lock:
+            _usage_totals["errors"] += 1
         return None
 
     if result.returncode != 0:
         logger.warning("claude CLI returned non-zero: %s", result.stderr[:200])
+        with _usage_lock:
+            _usage_totals["errors"] += 1
+        return None
 
-    return result.stdout
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        # Unexpected CLI output shape (e.g. version mismatch) -- degrade to the raw stdout
+        # rather than failing the whole call, but we lose usage data for this one call.
+        logger.warning("claude CLI --output-format json did not return valid JSON; using raw stdout")
+        return result.stdout
+
+    if payload.get("is_error"):
+        logger.warning("claude CLI reported an error result: %s", str(payload.get("result"))[:200])
+        with _usage_lock:
+            _usage_totals["errors"] += 1
+        return None
+
+    _record_usage(payload)
+    usage = payload.get("usage") or {}
+    logger.debug(
+        "claude call: %.3fs, $%.4f, in=%d out=%d cache=%d",
+        (payload.get("duration_ms") or 0) / 1000,
+        payload.get("total_cost_usd") or 0.0,
+        usage.get("input_tokens") or 0,
+        usage.get("output_tokens") or 0,
+        usage.get("cache_creation_input_tokens") or 0,
+    )
+
+    text_result = payload.get("result")
+    return text_result if isinstance(text_result, str) else None

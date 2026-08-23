@@ -59,6 +59,10 @@ export const campaignApi = {
     return httpClient.get(`/campaigns/${id}/pipeline/scoring-explainer`);
   },
 
+  getUsageSummary(id) {
+    return httpClient.get(`/campaigns/${id}/pipeline/usage-summary`);
+  },
+
   runPipeline(id, runType = "full", maxCandidates = null) {
     const formData = new FormData();
     formData.append("run_type", runType);

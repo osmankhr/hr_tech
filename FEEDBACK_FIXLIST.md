@@ -224,10 +224,46 @@ Data Engineer roles), Emine (Chapter Lead Solution Architect, DevOps Engineer ro
 
 ## Performance / workflow friction
 
-- [ ] **Candidate generation is slow.** Search/shortlist generation for DevOps Engineer role took
-      noticeably long. Worth profiling the pipeline for this role type to see if it's a
-      query-volume issue, an external API bottleneck, or ranking-step latency.
+- [x] **Candidate generation is slow.** ~~Search/shortlist generation for DevOps Engineer role
+      took noticeably long.~~ **Profiled and fixed 2026-08-23.** Pulled the actual per-stage log
+      for that exact run: query generation 9s, search 35s, **filter (AI review) 4m 29s — 62% of
+      total wall time**, ranking ~1m 55s, report <1s. Confirmed this pattern holds across all 22
+      historical "full" runs — total wall time (6.5-10.6 min) doesn't scale with candidate count
+      (4 candidates and 30 candidates both took ~8-9 min), which pointed at a fixed-concurrency
+      bottleneck rather than a volume problem.
+      Root cause: `filter.py` reviews candidates in parallel via `ThreadPoolExecutor`, but
+      `max_workers` defaulted to **6** — checked every campaign.yaml in the repo, none override
+      it. `ranking.pipeline`, by contrast, already defaults its concurrency to `batch_size` (50)
+      and finishes in a fraction of the time despite doing comparable work. Since these calls are
+      I/O-bound (waiting on the model, not CPU), concurrency scales close to linearly.
+      Fix: raised `filter.py`'s default `max_workers` from 6 to 20 (still overridable per-campaign
+      via `filter.max_workers` in campaign.yaml, or the pipeline's existing `--filter-max-workers`
+      CLI flag — that override mechanism already existed, the default was just too conservative).
+      Not done: didn't re-run a full campaign to measure the new wall-clock time directly (would
+      cost real API spend) — the fix is a direct, low-risk concurrency change to an I/O-bound
+      workload, not something that needed a live re-measurement to justify.
       — DevOps Engineer feedback (Emine)
+
+- [x] **[Follow-up, not from original feedback] Token/cost usage was never tracked.** While
+      profiling the above, found that `llm_provider.py` called the `claude` CLI without
+      `--output-format json`, so cost/token data was discarded, not just unlogged — no historical
+      run has ever had this data. Calibrated real per-call cost/latency with live test calls
+      (~$0.01-0.025 per candidate review call, 7-16s each under realistic concurrency) to answer
+      Osman's "what does this cost us" question with real numbers instead of a guess: a typical
+      campaign (~69 total Claude calls: 40 filter + 25 ranking + 2 query-gen + 2 one-time
+      schema/policy design) runs **~$0.70-$1.50 per full pipeline execution**.
+      Added permanently: `llm_provider.call_model_text` now uses `--output-format json`, parses
+      cost/token/duration from every call, and accumulates it thread-safely (filter.py and the
+      ranking pipeline both call this concurrently). `run_campaign.py` writes the accumulated
+      total to `data/usage_summary.json` at the end of every run and logs a summary line. Exposed
+      via `GET /api/campaigns/{id}/pipeline/usage-summary` and a small card on the Pipeline Run
+      Control panel showing cost/calls/tokens/errors for a campaign's most recent run.
+      Verified end-to-end with a real (minimal-cost) pipeline run: usage correctly tracked,
+      written to disk, and readable via the API — not just unit-tested in isolation. Also verified
+      thread-safety under real concurrent calls (5-way parallel, no lost updates) and that
+      timeouts/errors are counted without corrupting the running totals.
+      Not covered: the Copilot/GitHub Models provider path (opt-in, rarely used — default is
+      Claude) doesn't report usage the same way and wasn't instrumented.
 
 - [ ] **Can't make "critical" edits once inside a generated result.** Reviewer wanted to go back
       into a shortlist/result after generation and make an update, but the UI didn't allow the
@@ -262,7 +298,8 @@ Data Engineer roles), Emine (Chapter Lead Solution Architect, DevOps Engineer ro
    - ~~English Language Confidence signal~~ — done (built as proposed, soft signal only).
    - ~~Tag taxonomy expansion~~ — done (auto-populate from AI-designed capabilities, not a bigger
      fixed list).
-   - Candidate generation is slow — not started, needs profiling of a real run first.
+   - ~~Candidate generation is slow~~ — done 2026-08-23 (filter.py concurrency 6->20; also added
+     LLM cost/token usage tracking as a follow-up, previously nonexistent).
    - Shortlist volume too low for easy-to-fill roles — not started; may already be partially
      addressed by the Target Profiles fix above (recruiters can now raise it directly per
      campaign), but not verified against the original GCP Data Engineer complaint specifically.
