@@ -18,6 +18,22 @@ logger = logging.getLogger(__name__)
 
 COPILOT_FIXED_MODEL = "openai/gpt-5.3-codex"
 
+# Claude CLI profile fallback chain. Each profile is an isolated $HOME under
+# n8n-data/claude-profiles/<name>/ (same profiles the n8n workflows use), each
+# with its own `claude login` and subscription. Without a HOME override, the
+# claude subprocess inherits this process's own ambient $HOME instead, which
+# for hr-tech.service is Osman's personal login -- keeping ranking/filtering
+# calls off that account and onto a dedicated profile is the point here.
+# Tried in order; the first profile whose call succeeds wins.
+CLAUDE_PROFILES_DIR = Path("/home/osman/n8n-data/claude-profiles")
+CLAUDE_PROFILE_CHAIN = tuple(
+    part.strip()
+    for part in os.environ.get(
+        "CANDIDATE_POOL_CLAUDE_PROFILES", "aiworkspacetr,richard"
+    ).split(",")
+    if part.strip()
+)
+
 # Cost/token usage was previously not captured at all -- `claude --print` was called without
 # --output-format json, so the CLI's cost/usage data was thrown away, not just unlogged. This
 # accumulates it across every Claude CLI call in a pipeline run (filter.py, generate_queries.py,
@@ -161,6 +177,37 @@ def call_model_text(*, prompt: str, model: str, system: str | None, timeout: int
     if system:
         cmd += ["--system-prompt", system]
 
+    profiles = CLAUDE_PROFILE_CHAIN or (None,)
+    for i, profile in enumerate(profiles):
+        is_last = i == len(profiles) - 1
+        profile_home = CLAUDE_PROFILES_DIR / profile if profile else None
+        text_result, should_retry = _call_claude_cli(
+            cmd, prompt=prompt, timeout=timeout, home=profile_home, profile_label=profile
+        )
+        if text_result is not None:
+            return text_result
+        if not should_retry or is_last:
+            return None
+        logger.warning(
+            "claude profile %r failed, falling back to next profile in chain", profile
+        )
+    return None
+
+
+def _call_claude_cli(
+    cmd: list[str], *, prompt: str, timeout: int, home: Path | None, profile_label: str | None
+) -> tuple[str | None, bool]:
+    """Run one claude CLI attempt under an optional profile HOME.
+
+    Returns (text_result, should_retry_next_profile). should_retry is True for
+    failures worth falling back on (missing/broken profile, CLI error, non-zero
+    exit, timeout) and False for the CLI simply not being installed at all,
+    since switching HOME won't fix a missing binary.
+    """
+    env = dict(os.environ)
+    if home is not None:
+        env["HOME"] = str(home)
+
     try:
         result = subprocess.run(
             cmd,
@@ -168,21 +215,24 @@ def call_model_text(*, prompt: str, model: str, system: str | None, timeout: int
             capture_output=True,
             text=True,
             timeout=timeout,
+            env=env,
         )
     except FileNotFoundError:
         logger.error("claude CLI not found — ensure Claude Code is installed and on PATH")
-        return None
+        return None, False
     except subprocess.TimeoutExpired:
-        logger.warning("claude CLI timed out")
+        logger.warning("claude CLI timed out (profile=%s)", profile_label)
         with _usage_lock:
             _usage_totals["errors"] += 1
-        return None
+        return None, True
 
     if result.returncode != 0:
-        logger.warning("claude CLI returned non-zero: %s", result.stderr[:200])
+        logger.warning(
+            "claude CLI returned non-zero (profile=%s): %s", profile_label, result.stderr[:200]
+        )
         with _usage_lock:
             _usage_totals["errors"] += 1
-        return None
+        return None, True
 
     try:
         payload = json.loads(result.stdout)
@@ -190,18 +240,23 @@ def call_model_text(*, prompt: str, model: str, system: str | None, timeout: int
         # Unexpected CLI output shape (e.g. version mismatch) -- degrade to the raw stdout
         # rather than failing the whole call, but we lose usage data for this one call.
         logger.warning("claude CLI --output-format json did not return valid JSON; using raw stdout")
-        return result.stdout
+        return result.stdout, False
 
     if payload.get("is_error"):
-        logger.warning("claude CLI reported an error result: %s", str(payload.get("result"))[:200])
+        logger.warning(
+            "claude CLI reported an error result (profile=%s): %s",
+            profile_label,
+            str(payload.get("result"))[:200],
+        )
         with _usage_lock:
             _usage_totals["errors"] += 1
-        return None
+        return None, True
 
     _record_usage(payload)
     usage = payload.get("usage") or {}
     logger.debug(
-        "claude call: %.3fs, $%.4f, in=%d out=%d cache=%d",
+        "claude call (profile=%s): %.3fs, $%.4f, in=%d out=%d cache=%d",
+        profile_label,
         (payload.get("duration_ms") or 0) / 1000,
         payload.get("total_cost_usd") or 0.0,
         usage.get("input_tokens") or 0,
@@ -210,4 +265,4 @@ def call_model_text(*, prompt: str, model: str, system: str | None, timeout: int
     )
 
     text_result = payload.get("result")
-    return text_result if isinstance(text_result, str) else None
+    return (text_result if isinstance(text_result, str) else None), False

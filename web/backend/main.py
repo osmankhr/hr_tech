@@ -120,6 +120,13 @@ def get_connection():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    # WAL lets readers proceed while a write is in progress instead of locking
+    # the whole file (the default rollback-journal mode), which is what was
+    # causing "database is locked" 500s under concurrent multi-user access.
+    # This is a one-time, persistent, file-level setting; re-issuing it on
+    # every connection is a cheap no-op once already in WAL mode.
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA busy_timeout = 10000")
     return conn
 
 
@@ -1915,43 +1922,64 @@ def create_campaign(
     conn = get_connection()
     cur = conn.cursor()
 
-    campaign_count = conn.execute("""
-        SELECT COUNT(*) AS count
-        FROM campaigns
-    """).fetchone()["count"]
+    def _next_campaign_code():
+        # COUNT(*)-based numbering breaks as soon as any campaign is ever
+        # deleted (count goes down, but existing higher codes remain), which
+        # produces a code that already exists and fails the UNIQUE
+        # constraint. Deriving the next number from the highest existing
+        # "CMP-NNN" suffix instead is gap- and deletion-safe.
+        rows = conn.execute("""
+            SELECT campaign_code FROM campaigns WHERE campaign_code LIKE 'CMP-%'
+        """).fetchall()
+        max_n = 0
+        for row in rows:
+            suffix = row["campaign_code"].rsplit("-", 1)[-1]
+            if suffix.isdigit():
+                max_n = max(max_n, int(suffix))
+        return f"CMP-{max_n + 1:03d}"
 
-    campaign_code = f"CMP-{campaign_count + 1:03d}"
-
-    cur.execute("""
-       INSERT INTO campaigns (
-            campaign_code,
-            campaign_name,
-            location,
-            position_name,
-            experience,
-            sample_cv_filename,
-            target_profiles,
-            status,
-            owner,
-            created_by_user_id,
-            created_at,
-            updated_at
-        )
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (
-        campaign_code,
-        campaign_name,
-        location,
-        position_name,
-        experience,
-        saved_filename,
-        target_profiles,
-        "Active",
-        "System",
-        current_user["id"],
-        now,
-        now
-    ))
+    # Retry a few times on a code collision (e.g. a concurrent request from
+    # another user grabbing the same next number in the small window between
+    # computing it and inserting it) rather than failing the whole request.
+    for attempt in range(5):
+        campaign_code = _next_campaign_code()
+        try:
+            cur.execute("""
+               INSERT INTO campaigns (
+                    campaign_code,
+                    campaign_name,
+                    location,
+                    position_name,
+                    experience,
+                    sample_cv_filename,
+                    target_profiles,
+                    status,
+                    owner,
+                    created_by_user_id,
+                    created_at,
+                    updated_at
+                )
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                campaign_code,
+                campaign_name,
+                location,
+                position_name,
+                experience,
+                saved_filename,
+                target_profiles,
+                "Active",
+                "System",
+                current_user["id"],
+                now,
+                now
+            ))
+            break
+        except sqlite3.IntegrityError:
+            if attempt == 4:
+                conn.close()
+                raise
+            continue
 
     campaign_id = cur.lastrowid
 
