@@ -53,3 +53,18 @@ export function campaignToEditForm(campaign) {
     status: campaign.status || "Active",
   };
 }
+
+export function mapCampaignTemplateFromApi(template) {
+  return {
+    id: template.id,
+    templateName: template.template_name,
+    pipelineDescription: template.pipeline_description || "",
+    locations: Array.isArray(template.locations) ? template.locations : [],
+    jobDescription: template.job_description || "",
+    filterCriteria: template.filter_criteria || "",
+    sourceCampaignId: template.source_campaign_id || null,
+    sourceCampaignName: template.source_campaign_name || null,
+    sourceCampaignCode: template.source_campaign_code || null,
+    createdAt: template.created_at?.slice(0, 10),
+  };
+}

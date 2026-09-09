@@ -23,6 +23,7 @@ import {
   campaignToEditForm,
   campaignToFormData,
   mapCampaignFromApi,
+  mapCampaignTemplateFromApi,
 } from "../mappers/campaignMapper";
 import { candidateToFormData, mapCandidateFromApi } from "../mappers/candidateMapper";
 
@@ -106,6 +107,7 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
     jobDescription: DEFAULT_JOB_DESCRIPTION,
     filterCriteria: DEFAULT_FILTER_CRITERIA,
   });
+  const [campaignTemplates, setCampaignTemplates] = useState([]);
 
   const [selectedCampaign, setSelectedCampaign] = useState(null);
   const [editingCampaign, setEditingCampaign] = useState(null);
@@ -459,6 +461,16 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
     refreshArtifactStatuses(campaigns.map((campaign) => campaign.id)).catch(() => {});
   }, [campaigns]);
 
+  const loadCampaignTemplates = async () => {
+    try {
+      const rows = await campaignApi.getTemplates();
+      setCampaignTemplates(rows.map(mapCampaignTemplateFromApi));
+    } catch (error) {
+      // Non-fatal — saved configs are a convenience, not required to create a campaign.
+      console.error("Failed to load saved campaign configs:", error);
+    }
+  };
+
   const openCreateCampaign = () => {
     setCreateError("");
     setCreateForm({
@@ -469,6 +481,23 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
       filterCriteria: DEFAULT_FILTER_CRITERIA,
     });
     setShowCreate(true);
+    loadCampaignTemplates();
+  };
+
+  const applyCampaignTemplate = (templateId) => {
+    const template = campaignTemplates.find((item) => item.id === templateId);
+    if (!template) {
+      return;
+    }
+    setCreateError("");
+    setCreateForm({
+      name: template.templateName || "",
+      description: template.pipelineDescription || "",
+      locations:
+        template.locations.length > 0 ? template.locations : buildInitialLocations(""),
+      jobDescription: template.jobDescription || DEFAULT_JOB_DESCRIPTION,
+      filterCriteria: template.filterCriteria || DEFAULT_FILTER_CRITERIA,
+    });
   };
 
   const updateCreateForm = (field, value) => {
@@ -552,6 +581,21 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
         jobDescription: createForm.jobDescription,
         filterCriteria: createForm.filterCriteria,
       });
+
+      try {
+        await campaignApi.saveTemplate({
+          templateName: createForm.name.trim(),
+          pipelineDescription: createForm.description.trim(),
+          locations: cleanedLocations,
+          jobDescription: createForm.jobDescription,
+          filterCriteria: createForm.filterCriteria,
+          sourceCampaignId: campaignId,
+        });
+        loadCampaignTemplates();
+      } catch (templateError) {
+        // Non-fatal — the campaign itself was created successfully either way.
+        console.error("Failed to save campaign config for reuse:", templateError);
+      }
 
       await Promise.all([loadCampaigns(), loadSkills()]);
 
@@ -886,6 +930,8 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
               onClose={() => setShowCreate(false)}
               error={createError}
               saving={createBusy}
+              templates={campaignTemplates}
+              onUseTemplate={applyCampaignTemplate}
             />
           )}
 

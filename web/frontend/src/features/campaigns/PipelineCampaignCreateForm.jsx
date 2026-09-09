@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
 
@@ -11,7 +12,31 @@ export function PipelineCampaignCreateForm({
   onClose,
   error,
   saving,
+  templates = [],
+  onUseTemplate,
 }) {
+  const [selectedTemplateId, setSelectedTemplateId] = useState("");
+  const [appliedTemplateName, setAppliedTemplateName] = useState("");
+
+  const applyTemplate = (rawId) => {
+    if (!rawId || !onUseTemplate) {
+      return;
+    }
+    const template = templates.find((item) => String(item.id) === String(rawId));
+    onUseTemplate(Number(rawId));
+    setAppliedTemplateName(template?.templateName || "");
+  };
+
+  const handleSelectTemplate = (event) => {
+    const rawId = event.target.value;
+    setSelectedTemplateId(rawId);
+    // Apply immediately on selection so the recruiter sees the fields fill in
+    // without a second click.
+    applyTemplate(rawId);
+  };
+
+  const handleUseTemplate = () => applyTemplate(selectedTemplateId);
+
   return (
     <Card className="mb-6 p-5">
       <div className="mb-5 flex items-start justify-between gap-4">
@@ -32,6 +57,51 @@ export function PipelineCampaignCreateForm({
           {error}
         </div>
       )}
+
+      <div className="mb-5 rounded-lg border border-slate-200 bg-slate-50 p-4">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+          <label className="block flex-1 text-sm">
+            <span className="mb-1 block font-medium text-slate-700">Load From Saved Config</span>
+            <select
+              value={selectedTemplateId}
+              onChange={handleSelectTemplate}
+              className="w-full rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm outline-none focus:border-indigo-600"
+            >
+              <option value="">
+                {templates.length === 0 ? "No saved configs yet" : "Select a saved config…"}
+              </option>
+              {templates.map((template) => (
+                <option key={template.id} value={template.id}>
+                  {template.templateName}
+                  {template.sourceCampaignName
+                    ? ` — used for ${template.sourceCampaignName}`
+                    : " — not yet run"}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <Button
+            type="button"
+            variant="outline"
+            disabled={!selectedTemplateId}
+            onClick={handleUseTemplate}
+          >
+            Re-apply Config
+          </Button>
+        </div>
+        {appliedTemplateName ? (
+          <p className="mt-2 text-xs font-medium text-emerald-700">
+            ✓ Loaded “{appliedTemplateName}” into the fields below — review and edit before saving.
+          </p>
+        ) : (
+          <p className="mt-2 text-xs text-slate-500">
+            Selecting a config copies its campaign name, locations, job description, and filter
+            criteria into the fields below — every campaign you create here is saved as a reusable
+            config.
+          </p>
+        )}
+      </div>
 
       <div className="grid gap-4 md:grid-cols-2">
         <label className="block text-sm">
