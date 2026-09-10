@@ -54,6 +54,24 @@ export function campaignToEditForm(campaign) {
   };
 }
 
+export function mapConfigVersionFromApi(version) {
+  return {
+    id: version.id,
+    versionNumber: version.version_number,
+    isCurrent: Boolean(version.is_current),
+    hasResults: Boolean(version.has_results),
+    pipelineName: version.pipeline_name,
+    pipelineDescription: version.pipeline_description || "",
+    locations: Array.isArray(version.locations) ? version.locations : [],
+    jobDescription: version.job_description || "",
+    filterCriteria: version.filter_criteria || "",
+    pipelineDir: version.pipeline_dir,
+    acceptedCandidates: version.accepted_candidates,
+    rankedCandidates: version.ranked_candidates,
+    createdAt: version.created_at?.slice(0, 10),
+  };
+}
+
 export function mapCampaignTemplateFromApi(template) {
   return {
     id: template.id,

@@ -72,6 +72,20 @@ export const campaignApi = {
     return httpClient.get(`/campaigns/${id}/rankings`);
   },
 
+  getConfigVersions(id) {
+    return httpClient.get(`/campaigns/${id}/pipeline/config-versions`);
+  },
+
+  updateConfig(id, payload) {
+    const formData = new FormData();
+    formData.append("pipeline_name", payload.pipelineName || "");
+    formData.append("pipeline_description", payload.pipelineDescription || "");
+    formData.append("locations_json", JSON.stringify(payload.locations || []));
+    formData.append("job_description", payload.jobDescription || "");
+    formData.append("filter_criteria", payload.filterCriteria || "");
+    return httpClient.put(`/campaigns/${id}/pipeline/config`, formData);
+  },
+
   getScoringExplainer(id) {
     return httpClient.get(`/campaigns/${id}/pipeline/scoring-explainer`);
   },
