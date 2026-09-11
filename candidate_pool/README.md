@@ -90,10 +90,10 @@ search:
       num_sentences: 10
       highlights_per_url: 3
 query_generation:
-  model: claude-sonnet-4-5
+  model: claude-sonnet-5
 filter:
   max_candidates: 100   # top-N by Exa score sent to Claude
-  model: claude-sonnet-4-5
+  model: claude-sonnet-5
 dedup:                  # optional
   existing_pool_path: "input/existing_pool.json"
 output:
@@ -120,6 +120,10 @@ Claude returns a structured decision:
 
 The `shortlist.json` output preserves **all Exa fields** plus the AI review, so it can be fed directly into a downstream CV scoring task.
 
+If the Claude call itself fails (timeout, auth outage, unparseable output), the candidate gets a
+stub review instead of crashing the batch. That stub's recommendation is `PENDING` by default —
+see `CANDIDATE_POOL_FAIL_MODE` below.
+
 ## Dependencies
 
 - `EXA_API_KEY` — [exa.ai](https://exa.ai) API key (required unless `search.provider` is set to
@@ -129,3 +133,18 @@ The `shortlist.json` output preserves **all Exa fields** plus the AI review, so 
 - `APOLLO_API_KEY` — [apollo.io](https://apollo.io) API key, only needed when
   `search.provider: apollo`
 - `claude` CLI — Claude Code must be installed and authenticated
+
+## Environment variables
+
+Provider selection and failure handling for every LLM call (`generate_queries.py`, `filter.py`,
+ranking) live in `scripts/llm_provider.py` and are controlled by env vars — none of this is
+exposed in the web UI, it's engineer-only tuning:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `CANDIDATE_POOL_LLM_PROVIDER` | `auto` | Force `claude`, `copilot`, or `codex`. `auto` detects the local git/gh identity and routes known developer accounts to their own CLI (see below) so local runs don't use the shared production Claude logins. |
+| `CANDIDATE_POOL_CODEX_USERS` | `yigit-can-ozkaya` | Comma-separated identities auto-routed to the Codex CLI in `auto` mode. |
+| `CANDIDATE_POOL_COPILOT_USERS` | *(empty)* | Comma-separated identities auto-routed to Copilot in `auto` mode. |
+| `CANDIDATE_POOL_CODEX_MODEL` | `gpt-5.6-luna` | Model used for Codex-provider calls. |
+| `CANDIDATE_POOL_CLAUDE_PROFILES` | `aiworkspacetr,richard` | Ordered fallback chain of Claude CLI `$HOME` profiles under `/home/osman/n8n-data/claude-profiles/` (production server only). |
+| `CANDIDATE_POOL_FAIL_MODE` | `pending` | What `filter.py` does when a candidate's AI review call fails: `pending` flags it for manual review (safe default — never set anything else on the deployed server), `reject` auto-rejects it instead, which is faster for local iteration but silently drops real candidates on any outage. |
