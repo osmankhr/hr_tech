@@ -146,11 +146,8 @@ class CandidateFilter:
 
         review = self._call_model(prompt)
         if review is None:
-            # REJECT rather than PENDING: a handful of calls per run die on timeout, and a
-            # PENDING stub would push every one of them into the recruiter's manual queue with
-            # no evidence attached. Losing an unreviewed candidate costs less than that.
             review = {
-                "recommendation": "REJECT",
+                "recommendation": "PENDING",
                 "confidence": "LOW",
                 "candidate_location": None,
                 "candidate_job_title": None,
@@ -158,7 +155,7 @@ class CandidateFilter:
                 "english_confidence": "MEDIUM",
                 "english_confidence_reason": None,
                 "key_strength": None,
-                "main_concern": "AI review failed — rejected unreviewed",
+                "main_concern": "AI review failed — manual review required",
                 "reasoning": "Model call failed or returned unparseable output.",
             }
 
