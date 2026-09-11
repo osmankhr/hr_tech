@@ -7,6 +7,9 @@ Weekly scraper for [tez.yok.gov.tr](https://tez.yok.gov.tr) that tracks new ML, 
 - Searches YÖK's thesis database across 16 ML/DS/AI keywords in Turkish and English
 - Filters to a curated set of target universities (Boğaziçi, İTÜ, ODTÜ, Bilkent, Sabancı, Koç, etc.)
 - Diffs each weekly run against all prior runs to surface **new authors** only
+- Uses Claude to screen out false positives — theses that apply AI/ML in an unrelated field
+  (biology, medicine, education/learning sciences, etc.) rather than theses by an actual
+  ML/DS/AI practitioner
 - Sends an HTML email summary via Gmail SMTP
 
 ## Schedule
@@ -53,7 +56,12 @@ All output lands in `data/`:
 | File | Description |
 |------|-------------|
 | `theses_YYYYMMDD.csv` | All theses found in that week's run |
-| `new_authors_YYYYMMDD.csv` | Authors not seen in any prior run |
+| `new_authors_YYYYMMDD.csv` | Authors not seen in any prior run, kept by the Claude relevance filter |
+| `new_authors_rejected_YYYYMMDD.csv` | New authors the filter judged off-topic (only written when non-empty) |
+
+If the Claude CLI call fails for any reason (timeout, auth outage, unparseable output), the
+filter fails open — every new author is kept, same as before this filter existed. It never
+silently produces an empty digest because of an unrelated outage.
 
 ## Target universities
 
