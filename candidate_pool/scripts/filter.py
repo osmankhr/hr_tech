@@ -4,6 +4,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import logging
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,15 @@ import pipeline_status
 from llm_provider import call_model_text
 
 logger = logging.getLogger(__name__)
+
+# PENDING is correct for production: a failed review still needs a human look before a real
+# candidate gets dropped. Set to "reject" for fast local iteration (e.g. testing against a
+# flaky/rate-limited local model) where auto-rejecting failed calls is a bigger productivity win
+# than the false rejections it introduces. Never set to "reject" on the deployed server.
+_FAIL_MODE = os.environ.get("CANDIDATE_POOL_FAIL_MODE", "pending").strip().lower()
+if _FAIL_MODE not in {"pending", "reject"}:
+    logger.warning("Unknown CANDIDATE_POOL_FAIL_MODE=%r; defaulting to 'pending'", _FAIL_MODE)
+    _FAIL_MODE = "pending"
 
 _SYSTEM_INSTRUCTIONS = """\
 You are a recruitment assistant. Review the candidate profile against the provided \
@@ -146,8 +156,13 @@ class CandidateFilter:
 
         review = self._call_model(prompt)
         if review is None:
+            recommendation = "REJECT" if _FAIL_MODE == "reject" else "PENDING"
+            main_concern = (
+                "AI review failed — rejected unreviewed" if _FAIL_MODE == "reject"
+                else "AI review failed — manual review required"
+            )
             review = {
-                "recommendation": "PENDING",
+                "recommendation": recommendation,
                 "confidence": "LOW",
                 "candidate_location": None,
                 "candidate_job_title": None,
@@ -155,7 +170,7 @@ class CandidateFilter:
                 "english_confidence": "MEDIUM",
                 "english_confidence_reason": None,
                 "key_strength": None,
-                "main_concern": "AI review failed — manual review required",
+                "main_concern": main_concern,
                 "reasoning": "Model call failed or returned unparseable output.",
             }
 

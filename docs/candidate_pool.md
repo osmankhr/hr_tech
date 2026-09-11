@@ -198,6 +198,10 @@ sections).
     ≤3000 chars), calls the model, merges the AI-derived `candidate_location`/`candidate_job_title`
     back onto the candidate (overriding the raw search-bucket location, which is not verified fact).
     On failure, substitutes a graceful `PENDING`/`LOW` stub review — **never crashes the batch**.
+    Controlled by env var `CANDIDATE_POOL_FAIL_MODE` (`pending` default, or `reject`) — `reject`
+    is a dev-only speed knob for fast local iteration; never set it on the deployed server, since
+    it silently drops real candidates instead of flagging them for manual review on any failure
+    (timeout, auth outage, etc.).
   - `_select_candidates_for_review(all_candidates)` — **query-balanced capped selection**: groups
     candidates by `(search_bucket, query)`, takes each group's top-scoring candidate first (ensures
     every query gets at least one review before the cap is spent), then round-robins remaining
