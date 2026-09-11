@@ -200,8 +200,24 @@ def ensure_pipeline_tables():
             FOREIGN KEY (candidate_id) REFERENCES candidates(id) ON DELETE CASCADE
         );
 
+        CREATE TABLE IF NOT EXISTS pipeline_campaign_templates (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            template_name TEXT NOT NULL,
+            pipeline_description TEXT,
+            locations_json TEXT NOT NULL,
+            job_description TEXT NOT NULL,
+            filter_criteria TEXT NOT NULL,
+            source_campaign_id INTEGER,
+            created_by_user_id INTEGER,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (source_campaign_id) REFERENCES campaigns(id) ON DELETE SET NULL,
+            FOREIGN KEY (created_by_user_id) REFERENCES users(id) ON DELETE SET NULL
+        );
+
         CREATE INDEX IF NOT EXISTS idx_pipeline_runs_campaign ON pipeline_runs(campaign_id, started_at DESC);
         CREATE INDEX IF NOT EXISTS idx_candidate_rankings_campaign ON candidate_rankings(campaign_id, rank ASC);
+        CREATE INDEX IF NOT EXISTS idx_pipeline_campaign_templates_owner ON pipeline_campaign_templates(created_by_user_id, created_at DESC);
     """)
 
     # Backward-compatible columns for run summary metrics.
@@ -731,6 +747,127 @@ def setup_pipeline_campaign(
         "job_description_path": str(job_description_path),
         "filter_criteria_path": str(filter_criteria_path),
     }
+
+
+def _parse_template_locations(locations_json: str) -> list:
+    try:
+        parsed = json.loads(locations_json)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="locations_json must be valid JSON")
+
+    if not isinstance(parsed, list) or len(parsed) == 0:
+        raise HTTPException(status_code=400, detail="locations_json must be a non-empty JSON array")
+
+    cleaned = []
+    for item in parsed:
+        if not isinstance(item, dict):
+            raise HTTPException(status_code=400, detail="Each location must be an object with name and hint")
+        name = str(item.get("name", "")).strip()
+        hint = str(item.get("hint", "")).strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="Each location must include a non-empty name")
+        cleaned.append({"name": name, "hint": hint})
+    return cleaned
+
+
+@app.post("/api/campaign-templates")
+def create_campaign_template(
+    template_name: str = Form(...),
+    pipeline_description: str = Form(""),
+    locations_json: str = Form(...),
+    job_description: str = Form(...),
+    filter_criteria: str = Form(...),
+    source_campaign_id: Optional[int] = Form(None),
+    current_user=Depends(get_current_user),
+):
+    """Save a reusable pipeline campaign config (name/locations/JD/criteria).
+
+    Lets recruiters reuse a previous campaign's setup instead of retyping it.
+    Optionally bound to the campaign it was actually used to create.
+    """
+    if not template_name.strip():
+        raise HTTPException(status_code=400, detail="Config name is required")
+
+    cleaned_locations = _parse_template_locations(locations_json)
+
+    conn = get_connection()
+
+    if source_campaign_id is not None and not _get_owned_campaign(conn, source_campaign_id, current_user):
+        conn.close()
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    now = utc_now()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO pipeline_campaign_templates (
+            template_name,
+            pipeline_description,
+            locations_json,
+            job_description,
+            filter_criteria,
+            source_campaign_id,
+            created_by_user_id,
+            created_at,
+            updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        template_name.strip(),
+        pipeline_description.strip(),
+        json.dumps(cleaned_locations),
+        job_description,
+        filter_criteria,
+        source_campaign_id,
+        current_user["id"],
+        now,
+        now,
+    ))
+    template_id = cur.lastrowid
+
+    conn.commit()
+    conn.close()
+
+    return {"success": True, "template_id": template_id}
+
+
+@app.get("/api/campaign-templates")
+def list_campaign_templates(current_user=Depends(get_current_user)):
+    conn = get_connection()
+
+    if current_user["role"] == "admin":
+        rows = conn.execute("""
+            SELECT
+                t.*,
+                c.campaign_name AS source_campaign_name,
+                c.campaign_code AS source_campaign_code
+            FROM pipeline_campaign_templates t
+            LEFT JOIN campaigns c ON c.id = t.source_campaign_id
+            ORDER BY t.created_at DESC
+        """).fetchall()
+    else:
+        rows = conn.execute("""
+            SELECT
+                t.*,
+                c.campaign_name AS source_campaign_name,
+                c.campaign_code AS source_campaign_code
+            FROM pipeline_campaign_templates t
+            LEFT JOIN campaigns c ON c.id = t.source_campaign_id
+            WHERE t.created_by_user_id = ?
+            ORDER BY t.created_at DESC
+        """, (current_user["id"],)).fetchall()
+
+    conn.close()
+
+    results = []
+    for row in rows:
+        item = dict(row)
+        try:
+            item["locations"] = json.loads(item.pop("locations_json") or "[]")
+        except json.JSONDecodeError:
+            item["locations"] = []
+        results.append(item)
+
+    return results
 
 
 @app.get("/api/campaigns/{campaign_id}/pipeline/runs")

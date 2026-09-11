@@ -7,6 +7,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
+import pipeline_status
+
 from .agents.candidate_scorer_agent import CandidateScorerAgent
 from .agents.feature_designer_agent import FeatureDesignerAgent
 from .manual_grader import ManualGrader
@@ -122,6 +124,12 @@ class RankingPipeline:
 
                 for future in as_completed(future_map):
                     ranked_with_source_index.append(future.result())
+                    pipeline_status.write(
+                        self.campaign_dir,
+                        "ranking",
+                        current=len(ranked_with_source_index),
+                        total=total_candidates,
+                    )
 
         ranked_with_source_index.sort(key=lambda item: item[0])
         ranked = [item[1] for item in ranked_with_source_index]

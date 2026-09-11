@@ -1,7 +1,9 @@
 """Shared LLM provider selection for candidate_pool scripts.
 
-Defaults to Claude CLI. Can switch to Copilot with environment variables or
-auto-select based on known local git/GitHub account names.
+Defaults to Claude CLI (what the deployed server uses). Auto-switches to a developer-local CLI
+when the machine's git/GitHub identity matches a known developer account, so local pipeline runs
+don't bill the production Claude profiles. Any choice can be forced with
+CANDIDATE_POOL_LLM_PROVIDER.
 """
 from __future__ import annotations
 
@@ -10,6 +12,7 @@ import logging
 import os
 import subprocess
 import threading
+import time
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -17,6 +20,14 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 COPILOT_FIXED_MODEL = "openai/gpt-5.3-codex"
+
+# campaign.yaml's `model` keys name Claude models, so they're meaningless to Codex. ChatGPT-account
+# login (as opposed to an API key) cannot use the `*-codex` model IDs the old CLI defaulted to —
+# those 400 with "not supported when using Codex with a ChatGPT account." gpt-5.6-luna is the
+# cheapest current ChatGPT-login model; override with CANDIDATE_POOL_CODEX_MODEL if needed.
+CODEX_MODEL = os.environ.get("CANDIDATE_POOL_CODEX_MODEL", "gpt-5.6-luna").strip() or None
+
+VALID_PROVIDERS = {"claude", "copilot", "codex"}
 
 # Claude CLI profile fallback chain. Each profile is an isolated $HOME under
 # n8n-data/claude-profiles/<name>/ (same profiles the n8n workflows use), each
@@ -92,14 +103,6 @@ def _run_text(cmd: list[str], cwd: Path | None = None) -> str:
 
 
 @lru_cache(maxsize=1)
-def _detect_git_user() -> str:
-    """Detect current repo git user.name, if available."""
-    here = Path(__file__).resolve().parent
-    repo_root = here.parent
-    return _run_text(["git", "config", "--get", "user.name"], cwd=repo_root)
-
-
-@lru_cache(maxsize=1)
 def _detect_logged_gh_users() -> set[str]:
     """Detect all gh accounts listed by `gh auth status -h github.com`."""
     out = _run_text(["gh", "auth", "status", "-h", "github.com"])
@@ -119,10 +122,42 @@ def _detect_logged_gh_users() -> set[str]:
     return users
 
 
+@lru_cache(maxsize=1)
+def _detect_local_identities() -> set[str]:
+    """Every name that plausibly identifies whoever owns this checkout.
+
+    Three sources because no single one is reliable: `user.name` is often unset (commits then
+    get their author from a global config or the commit-time environment), `gh` isn't installed
+    everywhere, and the last commit's author is the only signal that survives a machine with
+    neither configured.
+    """
+    repo_root = Path(__file__).resolve().parent.parent
+
+    identities = {
+        _run_text(["git", "config", "--get", "user.name"], cwd=repo_root),
+        _run_text(["git", "log", "-1", "--format=%an"], cwd=repo_root),
+    }
+    identities |= _detect_logged_gh_users()
+
+    return {name for name in identities if name}
+
+
+def _env_user_set(var_name: str, default: str) -> set[str]:
+    return {
+        part.strip()
+        for part in os.environ.get(var_name, default).split(",")
+        if part.strip()
+    }
+
+
 def choose_provider() -> str:
-    """Return one of: claude, copilot."""
+    """Return one of: claude, copilot, codex.
+
+    Claude is the default because that's what the deployed server is set up for; a developer's
+    own machine is detected by account name and routed to their local CLI instead.
+    """
     mode = os.environ.get("CANDIDATE_POOL_LLM_PROVIDER", "auto").strip().lower()
-    if mode in {"claude", "copilot"}:
+    if mode in VALID_PROVIDERS:
         return mode
 
     if mode not in {"", "auto"}:
@@ -131,26 +166,68 @@ def choose_provider() -> str:
             mode,
         )
 
-    preferred_users = {
-        part.strip()
-        for part in os.environ.get(
-            "CANDIDATE_POOL_COPILOT_USERS",
-            "MG77XN_ingcp",
-        ).split(",")
-        if part.strip()
-    }
+    identities = _detect_local_identities()
 
-    git_user = _detect_git_user()
-    gh_users = _detect_logged_gh_users()
+    codex_users = _env_user_set("CANDIDATE_POOL_CODEX_USERS", "yigit-can-ozkaya")
+    if identities & codex_users:
+        return "codex"
 
-    if git_user in preferred_users or (preferred_users & gh_users):
+    # Copilot is no longer auto-selected for anyone (the ING account it was keyed to is out of
+    # use); it stays reachable via CANDIDATE_POOL_LLM_PROVIDER=copilot, or by listing an account
+    # in CANDIDATE_POOL_COPILOT_USERS.
+    copilot_users = _env_user_set("CANDIDATE_POOL_COPILOT_USERS", "")
+    if identities & copilot_users:
         return "copilot"
+
     return "claude"
 
 
 def call_model_text(*, prompt: str, model: str, system: str | None, timeout: int) -> str | None:
-    """Call selected LLM provider and return raw text output."""
+    """Call selected LLM provider and return raw text output.
+
+    Never raises: every caller (filter.py, generate_queries.py, the ranking agents) treats None
+    as "this one candidate failed" and keeps the batch going.
+    """
     provider = choose_provider()
+
+    if provider == "codex":
+        try:
+            from llm_codex import CodexClient  # type: ignore
+        except Exception:
+            logger.error(
+                "Codex provider selected but llm_codex.CodexClient is unavailable. "
+                "Restore candidate_pool/scripts/llm_codex.py or set CANDIDATE_POOL_LLM_PROVIDER=claude."
+            )
+            return None
+
+        started = time.monotonic()
+        try:
+            # Local Codex runs ignore campaign.yaml's Claude model name (see CODEX_MODEL).
+            client = CodexClient(model=CODEX_MODEL, timeout=timeout)
+            text = client.complete(system=system, user=prompt)
+        except ValueError as e:
+            logger.error("Codex CLI config error: %s", e)
+            with _usage_lock:
+                _usage_totals["errors"] += 1
+            return None
+        except Exception:
+            logger.exception("Codex CLI call failed")
+            with _usage_lock:
+                _usage_totals["errors"] += 1
+            return None
+
+        usage = client.last_usage or {}
+        _record_usage({
+            "usage": {
+                "input_tokens": usage.get("input_tokens", 0),
+                "output_tokens": usage.get("output_tokens", 0),
+                "cache_creation_input_tokens": usage.get("cached_input_tokens", 0),
+            },
+            # Codex bills against a subscription rather than per call, so there's no per-call
+            # cost to accumulate here.
+            "duration_ms": int((time.monotonic() - started) * 1000),
+        })
+        return text
 
     if provider == "copilot":
         try:

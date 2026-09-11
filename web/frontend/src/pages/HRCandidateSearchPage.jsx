@@ -14,6 +14,8 @@ import { CampaignDeleteModal } from "../features/campaigns/CampaignDeleteModal";
 import { CampaignEditModal } from "../features/campaigns/CampaignEditModal";
 import { CampaignPanel } from "../features/campaigns/CampaignPanel";
 import { PipelineCampaignCreateForm } from "../features/campaigns/PipelineCampaignCreateForm";
+import { PipelineConfigEditModal } from "../features/campaigns/PipelineConfigEditModal";
+import { PipelineConfigVersionList } from "../features/campaigns/PipelineConfigVersionList";
 import { CandidateDetailModal } from "../features/candidates/CandidateDetailModal";
 import { CandidateEditModal } from "../features/candidates/CandidateEditModal";
 import { CandidatePanel } from "../features/candidates/CandidatePanel";
@@ -23,6 +25,8 @@ import {
   campaignToEditForm,
   campaignToFormData,
   mapCampaignFromApi,
+  mapCampaignTemplateFromApi,
+  mapConfigVersionFromApi,
 } from "../mappers/campaignMapper";
 import { candidateToFormData, mapCandidateFromApi } from "../mappers/candidateMapper";
 
@@ -106,6 +110,7 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
     jobDescription: DEFAULT_JOB_DESCRIPTION,
     filterCriteria: DEFAULT_FILTER_CRITERIA,
   });
+  const [campaignTemplates, setCampaignTemplates] = useState([]);
 
   const [selectedCampaign, setSelectedCampaign] = useState(null);
   const [editingCampaign, setEditingCampaign] = useState(null);
@@ -132,6 +137,11 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
   const [pipelineMaxCandidates, setPipelineMaxCandidates] = useState("100");
   const [campaignArtifactStatus, setCampaignArtifactStatus] = useState({});
   const [campaignExportBusy, setCampaignExportBusy] = useState({});
+  const [configVersions, setConfigVersions] = useState([]);
+  const [configVersionsLoading, setConfigVersionsLoading] = useState(false);
+  const [configEditOpen, setConfigEditOpen] = useState(false);
+  const [configEditBusy, setConfigEditBusy] = useState(false);
+  const [configEditError, setConfigEditError] = useState("");
   const autoImportedRunIdsRef = useRef(new Set());
 
   const activeCampaigns = useMemo(
@@ -196,6 +206,11 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
   const pipelineRunning = useMemo(
     () => pipelineRuns.some((run) => run.status === "Running"),
     [pipelineRuns]
+  );
+
+  const currentConfigVersion = useMemo(
+    () => configVersions.find((version) => version.isCurrent) || null,
+    [configVersions]
   );
 
   const getArtifactStatus = (campaignId) => {
@@ -336,6 +351,70 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
     };
   }, [dashboardCampaignId]);
 
+  const loadConfigVersions = async (campaignId) => {
+    if (!campaignId) {
+      setConfigVersions([]);
+      return;
+    }
+
+    setConfigVersionsLoading(true);
+    try {
+      const rows = await campaignApi.getConfigVersions(campaignId);
+      setConfigVersions(Array.isArray(rows) ? rows.map(mapConfigVersionFromApi) : []);
+    } catch (error) {
+      setPipelineError(error.message || "Could not load config version history.");
+    } finally {
+      setConfigVersionsLoading(false);
+    }
+  };
+
+  const openConfigEdit = () => {
+    setConfigEditError("");
+    setConfigEditOpen(true);
+  };
+
+  const closeConfigEdit = () => {
+    setConfigEditOpen(false);
+    setConfigEditError("");
+  };
+
+  const saveConfigEdit = async (payload) => {
+    if (!pipelineCampaignId) {
+      return;
+    }
+
+    if (!payload.pipelineName) {
+      setConfigEditError("Campaign name is required.");
+      return;
+    }
+    if (payload.locations.length === 0) {
+      setConfigEditError("At least one location is required.");
+      return;
+    }
+    if (!payload.jobDescription.trim() || !payload.filterCriteria.trim()) {
+      setConfigEditError("Job description and filter criteria are required.");
+      return;
+    }
+
+    setConfigEditBusy(true);
+    setConfigEditError("");
+    try {
+      const result = await campaignApi.updateConfig(pipelineCampaignId, payload);
+      setConfigEditOpen(false);
+      setPipelineMessage(
+        result?.new_version_created
+          ? `Saved as config version ${result.version_number}. Run the pipeline to see new results.`
+          : "Config updated."
+      );
+      await loadConfigVersions(pipelineCampaignId);
+      refreshArtifactStatuses([pipelineCampaignId]).catch(() => {});
+    } catch (error) {
+      setConfigEditError(error.message || "Could not save config changes.");
+    } finally {
+      setConfigEditBusy(false);
+    }
+  };
+
   useEffect(() => {
     if (!pipelineCampaignId) {
       return;
@@ -349,6 +428,7 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
         ]);
         setPipelineRuns(Array.isArray(runs) ? runs : []);
         setRankings(Array.isArray(rankingItems) ? rankingItems : []);
+        await loadConfigVersions(pipelineCampaignId);
       } catch (error) {
         setPipelineError(error.message || "Could not load pipeline state.");
       }
@@ -429,6 +509,7 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
         loadCandidates().catch(() => {});
         loadCampaigns().catch(() => {});
         refreshArtifactStatuses([pipelineCampaignId]).catch(() => {});
+        loadConfigVersions(pipelineCampaignId).catch(() => {});
       }
     };
 
@@ -459,6 +540,16 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
     refreshArtifactStatuses(campaigns.map((campaign) => campaign.id)).catch(() => {});
   }, [campaigns]);
 
+  const loadCampaignTemplates = async () => {
+    try {
+      const rows = await campaignApi.getTemplates();
+      setCampaignTemplates(rows.map(mapCampaignTemplateFromApi));
+    } catch (error) {
+      // Non-fatal — saved configs are a convenience, not required to create a campaign.
+      console.error("Failed to load saved campaign configs:", error);
+    }
+  };
+
   const openCreateCampaign = () => {
     setCreateError("");
     setCreateForm({
@@ -469,6 +560,23 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
       filterCriteria: DEFAULT_FILTER_CRITERIA,
     });
     setShowCreate(true);
+    loadCampaignTemplates();
+  };
+
+  const applyCampaignTemplate = (templateId) => {
+    const template = campaignTemplates.find((item) => item.id === templateId);
+    if (!template) {
+      return;
+    }
+    setCreateError("");
+    setCreateForm({
+      name: template.templateName || "",
+      description: template.pipelineDescription || "",
+      locations:
+        template.locations.length > 0 ? template.locations : buildInitialLocations(""),
+      jobDescription: template.jobDescription || DEFAULT_JOB_DESCRIPTION,
+      filterCriteria: template.filterCriteria || DEFAULT_FILTER_CRITERIA,
+    });
   };
 
   const updateCreateForm = (field, value) => {
@@ -552,6 +660,21 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
         jobDescription: createForm.jobDescription,
         filterCriteria: createForm.filterCriteria,
       });
+
+      try {
+        await campaignApi.saveTemplate({
+          templateName: createForm.name.trim(),
+          pipelineDescription: createForm.description.trim(),
+          locations: cleanedLocations,
+          jobDescription: createForm.jobDescription,
+          filterCriteria: createForm.filterCriteria,
+          sourceCampaignId: campaignId,
+        });
+        loadCampaignTemplates();
+      } catch (templateError) {
+        // Non-fatal — the campaign itself was created successfully either way.
+        console.error("Failed to save campaign config for reuse:", templateError);
+      }
 
       await Promise.all([loadCampaigns(), loadSkills()]);
 
@@ -886,6 +1009,8 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
               onClose={() => setShowCreate(false)}
               error={createError}
               saving={createBusy}
+              templates={campaignTemplates}
+              onUseTemplate={applyCampaignTemplate}
             />
           )}
 
@@ -972,6 +1097,24 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
                     ))}
                   </select>
                 </label>
+
+                {pipelineCampaignId && (
+                  <div className="mt-3 flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={openConfigEdit}
+                      disabled={pipelineRunning || !currentConfigVersion}
+                      className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                    >
+                      Edit Config{currentConfigVersion ? ` (v${currentConfigVersion.versionNumber})` : ""}
+                    </button>
+                    {pipelineRunning && (
+                      <span className="text-xs text-amber-700">
+                        Config is locked while a pipeline run is in progress.
+                      </span>
+                    )}
+                  </div>
+                )}
 
                 {pipelineCampaignId && !pipelineRunning && pipelineRuns.length === 0 && (
                   <div className="mt-4 flex items-start gap-2 rounded-lg border-2 border-amber-400 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-900">
@@ -1080,6 +1223,8 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
                   </div>
                 </Card>
               )}
+
+              <PipelineConfigVersionList versions={configVersions} loading={configVersionsLoading} />
 
               <Card className="p-5">
                 <h3 className="text-base font-semibold text-slate-900">Run Timeline</h3>
@@ -1225,6 +1370,15 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
         candidate={editingCandidate}
         onClose={() => setEditingCandidate(null)}
         onSave={updateCandidate}
+      />
+
+      <PipelineConfigEditModal
+        initialConfig={configEditOpen ? currentConfigVersion : null}
+        willCreateNewVersion={Boolean(currentConfigVersion?.hasResults)}
+        onClose={closeConfigEdit}
+        onSave={saveConfigEdit}
+        saving={configEditBusy}
+        error={configEditError}
       />
     </div>
   );

@@ -125,49 +125,80 @@ def main() -> None:
 
     run_all = not any([args.search_only, args.filter_only, args.rank_only, args.report_only, args.queries_only])
 
-    if run_all or args.search_only or args.queries_only:
-        from generate_queries import QueryGenerator
-
-        logger.info("=== QUERY GENERATION PHASE ===")
-        queries = QueryGenerator(campaign_dir, config).run(force=args.force_queries)
-        total_q = sum(len(v) for v in queries.values())
-        logger.info("Query generation complete: %d queries across %d locations", total_q, len(queries))
-
-    if run_all or args.search_only:
-        from search import ExaSearcher
-
-        logger.info("=== SEARCH PHASE ===")
-        results = ExaSearcher(campaign_dir, config).run()
-        total = sum(len(v) for v in results.values())
-        logger.info("Search complete: %d candidates across %d locations", total, len(results))
-
-    if run_all or args.filter_only:
-        from filter import CandidateFilter
-
-        logger.info("=== FILTER PHASE ===")
-        filtered = CandidateFilter(campaign_dir, config).run()
-        accepted = sum(
-            1 for c in filtered if c.get("ai_review", {}).get("recommendation") == "ACCEPT"
-        )
-        logger.info("Filter complete: %d/%d accepted", accepted, len(filtered))
+    import pipeline_status
 
     ranking_enabled = config.get("ranking", {}).get("enabled", True)
     if args.force_ranking_redesign:
         config.setdefault("ranking", {})["force_redesign"] = True
 
-    if (run_all and ranking_enabled) or args.rank_only:
-        from ranking.pipeline import RankingPipeline
+    # Declared up front so the UI can render "step 2 of 5" without guessing which phases a
+    # partial run (--filter-only and friends) will actually visit.
+    planned_phases = [
+        phase
+        for phase, will_run in [
+            ("queries", run_all or args.search_only or args.queries_only),
+            ("search", run_all or args.search_only),
+            ("filter", run_all or args.filter_only),
+            ("ranking", (run_all and ranking_enabled) or args.rank_only),
+            ("report", run_all or args.report_only),
+        ]
+        if will_run
+    ]
 
-        logger.info("=== RANKING PHASE ===")
-        ranked = RankingPipeline(campaign_dir, config).run()
-        logger.info("Ranking complete: %d candidates ranked", len(ranked))
+    try:
+        if run_all or args.search_only or args.queries_only:
+            from generate_queries import QueryGenerator
 
-    if run_all or args.report_only:
-        from report import ReportGenerator
+            logger.info("=== QUERY GENERATION PHASE ===")
+            pipeline_status.write(campaign_dir, "queries", phases=planned_phases)
+            queries = QueryGenerator(campaign_dir, config).run(force=args.force_queries)
+            total_q = sum(len(v) for v in queries.values())
+            logger.info("Query generation complete: %d queries across %d locations", total_q, len(queries))
 
-        logger.info("=== REPORT PHASE ===")
-        shortlist_path = ReportGenerator(campaign_dir, config).run()
-        logger.info("Report complete: %s", shortlist_path)
+        if run_all or args.search_only:
+            from search import ExaSearcher
+
+            logger.info("=== SEARCH PHASE ===")
+            provider = str(config.get("search", {}).get("provider", "exa")).strip()
+            pipeline_status.write(
+                campaign_dir,
+                "search",
+                phases=planned_phases,
+                detail=f"via {provider}" if provider else None,
+            )
+            results = ExaSearcher(campaign_dir, config).run()
+            total = sum(len(v) for v in results.values())
+            logger.info("Search complete: %d candidates across %d locations", total, len(results))
+
+        if run_all or args.filter_only:
+            from filter import CandidateFilter
+
+            logger.info("=== FILTER PHASE ===")
+            pipeline_status.write(campaign_dir, "filter", phases=planned_phases)
+            filtered = CandidateFilter(campaign_dir, config).run()
+            accepted = sum(
+                1 for c in filtered if c.get("ai_review", {}).get("recommendation") == "ACCEPT"
+            )
+            logger.info("Filter complete: %d/%d accepted", accepted, len(filtered))
+
+        if (run_all and ranking_enabled) or args.rank_only:
+            from ranking.pipeline import RankingPipeline
+
+            logger.info("=== RANKING PHASE ===")
+            pipeline_status.write(campaign_dir, "ranking", phases=planned_phases)
+            ranked = RankingPipeline(campaign_dir, config).run()
+            logger.info("Ranking complete: %d candidates ranked", len(ranked))
+
+        if run_all or args.report_only:
+            from report import ReportGenerator
+
+            logger.info("=== REPORT PHASE ===")
+            pipeline_status.write(campaign_dir, "report", phases=planned_phases)
+            shortlist_path = ReportGenerator(campaign_dir, config).run()
+            logger.info("Report complete: %s", shortlist_path)
+    finally:
+        # Also on failure: a crashed run must not leave a phase looking perpetually active.
+        pipeline_status.clear(campaign_dir)
 
     from llm_provider import get_usage_summary
 
