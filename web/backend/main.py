@@ -200,6 +200,24 @@ def ensure_pipeline_tables():
             FOREIGN KEY (candidate_id) REFERENCES candidates(id) ON DELETE CASCADE
         );
 
+        -- Full history of pipeline_campaign_configs snapshots. pipeline_campaign_configs itself
+        -- stays a single current-pointer row per campaign (unchanged since its original design);
+        -- this table only ever gets new rows appended, so no existing row/constraint has to
+        -- change to add version history. The current version is always the one with the
+        -- highest version_number for a campaign_id.
+        CREATE TABLE IF NOT EXISTS pipeline_config_versions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            campaign_id INTEGER NOT NULL,
+            version_number INTEGER NOT NULL,
+            pipeline_dir TEXT NOT NULL,
+            campaign_yaml_path TEXT NOT NULL,
+            job_description_path TEXT NOT NULL,
+            filter_criteria_path TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE (campaign_id, version_number),
+            FOREIGN KEY (campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE
+        );
+
         CREATE TABLE IF NOT EXISTS pipeline_campaign_templates (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             template_name TEXT NOT NULL,
@@ -218,6 +236,21 @@ def ensure_pipeline_tables():
         CREATE INDEX IF NOT EXISTS idx_pipeline_runs_campaign ON pipeline_runs(campaign_id, started_at DESC);
         CREATE INDEX IF NOT EXISTS idx_candidate_rankings_campaign ON candidate_rankings(campaign_id, rank ASC);
         CREATE INDEX IF NOT EXISTS idx_pipeline_campaign_templates_owner ON pipeline_campaign_templates(created_by_user_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_pipeline_config_versions_campaign ON pipeline_config_versions(campaign_id, version_number DESC);
+    """)
+
+    # One-time backfill: every campaign configured before pipeline_config_versions existed gets
+    # its current pipeline_campaign_configs row recorded as version 1. Safe to run on every
+    # startup -- WHERE NOT IN skips campaigns that already have history.
+    conn.execute("""
+        INSERT INTO pipeline_config_versions (
+            campaign_id, version_number, pipeline_dir,
+            campaign_yaml_path, job_description_path, filter_criteria_path, created_at
+        )
+        SELECT campaign_id, 1, pipeline_dir, campaign_yaml_path, job_description_path,
+               filter_criteria_path, created_at
+        FROM pipeline_campaign_configs
+        WHERE campaign_id NOT IN (SELECT campaign_id FROM pipeline_config_versions)
     """)
 
     # Backward-compatible columns for run summary metrics.
@@ -368,6 +401,94 @@ def _build_campaign_yaml(name: str, description: str, locations, max_candidates:
     ])
 
     return "\n".join(lines)
+
+
+_LOCATION_CLAUSE_MARKER = "## Location Requirement (hard filter)"
+_LOCATION_CLAUSE_END_MARKER = "pending for manual review rather than accepting."
+
+
+def _strip_location_clause(text: str) -> str:
+    """Undo _build_location_filter_clause() so the edit-config UI shows only what the user typed.
+
+    Configs created before filter_criteria_raw.md existed (see setup_pipeline_campaign) only have
+    the combined file on disk, with the auto-generated location clause glued onto the front.
+    Stripping it here (rather than backfilling raw files for old campaigns) means an old config's
+    first re-save re-derives the clause itself instead of keeping two stale copies in sync.
+    """
+    if not text.startswith(_LOCATION_CLAUSE_MARKER):
+        return text
+    end_idx = text.find(_LOCATION_CLAUSE_END_MARKER)
+    if end_idx == -1:
+        return text
+    return text[end_idx + len(_LOCATION_CLAUSE_END_MARKER):].lstrip("\n")
+
+
+def _read_pipeline_config_files(pipeline_dir: Path) -> dict:
+    """Read a pipeline version's editable fields back off disk for the config-versions UI."""
+    campaign_yaml_path = pipeline_dir / "campaign.yaml"
+    job_description_path = pipeline_dir / "input" / "job_description.md"
+    filter_criteria_raw_path = pipeline_dir / "input" / "filter_criteria_raw.md"
+    filter_criteria_path = pipeline_dir / "input" / "filter_criteria.md"
+
+    name, description, locations = "", "", []
+    if campaign_yaml_path.exists():
+        try:
+            parsed = yaml.safe_load(campaign_yaml_path.read_text(encoding="utf-8")) or {}
+            name = parsed.get("name") or ""
+            description = parsed.get("description") or ""
+            locations = parsed.get("locations") or []
+        except Exception:
+            logger.exception("Failed to read campaign.yaml at %s", campaign_yaml_path)
+
+    job_description = (
+        job_description_path.read_text(encoding="utf-8") if job_description_path.exists() else ""
+    )
+
+    if filter_criteria_raw_path.exists():
+        filter_criteria = filter_criteria_raw_path.read_text(encoding="utf-8")
+    elif filter_criteria_path.exists():
+        filter_criteria = _strip_location_clause(filter_criteria_path.read_text(encoding="utf-8"))
+    else:
+        filter_criteria = ""
+
+    return {
+        "pipeline_name": name,
+        "pipeline_description": description,
+        "locations": locations,
+        "job_description": job_description,
+        "filter_criteria": filter_criteria,
+    }
+
+
+def _pipeline_results_summary(pipeline_dir: Path) -> dict:
+    """Whether a pipeline version has been run, and how far -- drives has_results/counts in the
+    config-versions UI and whether editing a config updates it in place or starts a new version.
+    """
+    shortlist_path = pipeline_dir / "output" / "shortlist.json"
+    has_results = shortlist_path.exists()
+    accepted_candidates = None
+    if has_results:
+        try:
+            candidates = json.loads(shortlist_path.read_text(encoding="utf-8"))
+            accepted_candidates = sum(
+                1 for c in candidates if (c.get("ai_review") or {}).get("recommendation") == "ACCEPT"
+            )
+        except Exception:
+            logger.exception("Failed to read shortlist.json at %s", shortlist_path)
+
+    ranked_candidates = None
+    ranked_path = pipeline_dir / "data" / "ranked_results.json"
+    if ranked_path.exists():
+        try:
+            ranked_candidates = len(json.loads(ranked_path.read_text(encoding="utf-8")))
+        except Exception:
+            logger.exception("Failed to read ranked_results.json at %s", ranked_path)
+
+    return {
+        "has_results": has_results,
+        "accepted_candidates": accepted_candidates,
+        "ranked_candidates": ranked_candidates,
+    }
 
 
 def _extract_years_experience(text: str):
@@ -695,6 +816,10 @@ def setup_pipeline_campaign(
         f"{location_clause}\n{filter_criteria}" if location_clause else filter_criteria
     )
     filter_criteria_path.write_text(full_filter_criteria, encoding="utf-8")
+    # Kept alongside the combined file (which is what the pipeline actually reads) so the
+    # edit-config UI can show back exactly what the user typed, without the auto-generated
+    # location clause re-prepending itself on every subsequent edit.
+    (input_dir / "filter_criteria_raw.md").write_text(filter_criteria, encoding="utf-8")
 
     # Sample CV (if uploaded on the campaign) never reached the search pipeline before —
     # generate_queries.py only reads PDFs from input/seed_cvs/, but the upload endpoint only
@@ -735,6 +860,21 @@ def setup_pipeline_campaign(
         now,
         now,
     ))
+    conn.execute("""
+        INSERT INTO pipeline_config_versions (
+            campaign_id, version_number, pipeline_dir,
+            campaign_yaml_path, job_description_path, filter_criteria_path, created_at
+        )
+        VALUES (?, 1, ?, ?, ?, ?, ?)
+        ON CONFLICT(campaign_id, version_number) DO NOTHING
+    """, (
+        campaign_id,
+        str(campaign_dir),
+        str(campaign_yaml_path),
+        str(job_description_path),
+        str(filter_criteria_path),
+        now,
+    ))
 
     conn.commit()
     conn.close()
@@ -746,6 +886,191 @@ def setup_pipeline_campaign(
         "campaign_yaml_path": str(campaign_yaml_path),
         "job_description_path": str(job_description_path),
         "filter_criteria_path": str(filter_criteria_path),
+    }
+
+
+@app.get("/api/campaigns/{campaign_id}/pipeline/config-versions")
+def get_pipeline_config_versions(campaign_id: int, current_user=Depends(get_current_user)):
+    conn = get_connection()
+
+    if not _get_owned_campaign(conn, campaign_id, current_user):
+        conn.close()
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    rows = conn.execute("""
+        SELECT id, version_number, pipeline_dir, created_at
+        FROM pipeline_config_versions
+        WHERE campaign_id = ?
+        ORDER BY version_number DESC
+    """, (campaign_id,)).fetchall()
+    conn.close()
+
+    # No is_current column: versions only ever get appended (never edited/deleted), so the
+    # highest version_number is always the current one -- i.e. the first row, since we sorted
+    # DESC above.
+    current_version_number = rows[0]["version_number"] if rows else None
+
+    versions = []
+    for row in rows:
+        pipeline_dir = Path(row["pipeline_dir"])
+        versions.append({
+            "id": row["id"],
+            "version_number": row["version_number"],
+            "is_current": row["version_number"] == current_version_number,
+            "pipeline_dir": str(pipeline_dir),
+            "created_at": row["created_at"],
+            **_read_pipeline_config_files(pipeline_dir),
+            **_pipeline_results_summary(pipeline_dir),
+        })
+    return versions
+
+
+@app.put("/api/campaigns/{campaign_id}/pipeline/config")
+def update_pipeline_config(
+    campaign_id: int,
+    pipeline_name: str = Form(...),
+    pipeline_description: str = Form(...),
+    locations_json: str = Form(...),
+    job_description: str = Form(...),
+    filter_criteria: str = Form(...),
+    current_user=Depends(get_current_user),
+):
+    """Edit a campaign's pipeline config.
+
+    If the current version has never produced results, edits overwrite its files in place. If it
+    already has a shortlist, editing must not disturb those saved results -- so this starts a new
+    version instead: a fresh pipeline_dir with the new config, while the old version's files and
+    pipeline_campaign_configs row before this edit stay exactly as they were, still reachable via
+    GET .../config-versions.
+    """
+    conn = get_connection()
+
+    campaign = _get_owned_campaign(conn, campaign_id, current_user)
+    if not campaign:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    current_row = conn.execute("""
+        SELECT pipeline_dir
+        FROM pipeline_campaign_configs
+        WHERE campaign_id = ?
+    """, (campaign_id,)).fetchone()
+
+    if not current_row:
+        conn.close()
+        raise HTTPException(status_code=400, detail="Pipeline config not found. Save config first.")
+
+    latest_version_row = conn.execute("""
+        SELECT MAX(version_number) AS version_number
+        FROM pipeline_config_versions
+        WHERE campaign_id = ?
+    """, (campaign_id,)).fetchone()
+    current_version_number = (latest_version_row["version_number"] if latest_version_row else None) or 1
+
+    try:
+        parsed_locations = json.loads(locations_json)
+    except json.JSONDecodeError:
+        conn.close()
+        raise HTTPException(status_code=400, detail="locations_json must be valid JSON")
+
+    if not isinstance(parsed_locations, list) or len(parsed_locations) == 0:
+        conn.close()
+        raise HTTPException(status_code=400, detail="locations_json must be a non-empty JSON array")
+
+    cleaned_locations = []
+    for item in parsed_locations:
+        if not isinstance(item, dict):
+            conn.close()
+            raise HTTPException(status_code=400, detail="Each location must be an object with name and hint")
+        name = str(item.get("name", "")).strip()
+        hint = str(item.get("hint", "")).strip()
+        if not name:
+            conn.close()
+            raise HTTPException(status_code=400, detail="Each location must include a non-empty name")
+        cleaned_locations.append({"name": name, "hint": hint})
+
+    current_pipeline_dir = Path(current_row["pipeline_dir"])
+    starts_new_version = _pipeline_results_summary(current_pipeline_dir)["has_results"]
+
+    campaign_extra = conn.execute(
+        "SELECT target_profiles, sample_cv_filename FROM campaigns WHERE id = ?",
+        (campaign_id,),
+    ).fetchone()
+    target_profiles = (campaign_extra["target_profiles"] if campaign_extra else None) or 40
+    sample_cv_filename = campaign_extra["sample_cv_filename"] if campaign_extra else None
+
+    if starts_new_version:
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        folder_name = f"{_slugify(pipeline_name)}_{stamp}"
+        pipeline_dir = CANDIDATE_POOL_CAMPAIGNS_DIR / folder_name
+        if pipeline_dir.exists():
+            conn.close()
+            raise HTTPException(status_code=409, detail="Pipeline campaign directory already exists")
+        version_number = current_version_number + 1
+    else:
+        pipeline_dir = current_pipeline_dir
+        version_number = current_version_number
+
+    input_dir = pipeline_dir / "input"
+    input_dir.mkdir(parents=True, exist_ok=True)
+    (pipeline_dir / "data").mkdir(parents=True, exist_ok=True)
+    (pipeline_dir / "output").mkdir(parents=True, exist_ok=True)
+    (pipeline_dir / "logs").mkdir(parents=True, exist_ok=True)
+
+    campaign_yaml_path = pipeline_dir / "campaign.yaml"
+    job_description_path = input_dir / "job_description.md"
+    filter_criteria_path = input_dir / "filter_criteria.md"
+
+    campaign_yaml_path.write_text(
+        _build_campaign_yaml(pipeline_name, pipeline_description, cleaned_locations, max_candidates=target_profiles),
+        encoding="utf-8",
+    )
+    job_description_path.write_text(job_description, encoding="utf-8")
+
+    location_clause = _build_location_filter_clause(cleaned_locations)
+    full_filter_criteria = (
+        f"{location_clause}\n{filter_criteria}" if location_clause else filter_criteria
+    )
+    filter_criteria_path.write_text(full_filter_criteria, encoding="utf-8")
+    (input_dir / "filter_criteria_raw.md").write_text(filter_criteria, encoding="utf-8")
+
+    if sample_cv_filename:
+        source_cv_path = UPLOAD_DIR / sample_cv_filename
+        if source_cv_path.exists():
+            seed_cv_dir = input_dir / "seed_cvs"
+            seed_cv_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source_cv_path, seed_cv_dir / source_cv_path.name)
+
+    now = utc_now()
+    conn.execute("""
+        UPDATE pipeline_campaign_configs
+        SET pipeline_dir = ?, campaign_yaml_path = ?, job_description_path = ?,
+            filter_criteria_path = ?, updated_at = ?
+        WHERE campaign_id = ?
+    """, (
+        str(pipeline_dir), str(campaign_yaml_path), str(job_description_path),
+        str(filter_criteria_path), now, campaign_id,
+    ))
+
+    if starts_new_version:
+        conn.execute("""
+            INSERT INTO pipeline_config_versions (
+                campaign_id, version_number, pipeline_dir,
+                campaign_yaml_path, job_description_path, filter_criteria_path, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (
+            campaign_id, version_number, str(pipeline_dir),
+            str(campaign_yaml_path), str(job_description_path), str(filter_criteria_path), now,
+        ))
+
+    conn.commit()
+    conn.close()
+
+    return {
+        "success": True,
+        "new_version_created": starts_new_version,
+        "version_number": version_number,
+        "pipeline_dir": str(pipeline_dir),
     }
 
 
