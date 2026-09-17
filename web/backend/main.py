@@ -1694,7 +1694,16 @@ def import_ranked_results(
                     feature_schema = json.loads(schema_path.read_text(encoding="utf-8"))
                     capabilities = feature_schema.get("capabilities") if isinstance(feature_schema, dict) else None
                     if isinstance(capabilities, list):
-                        _link_skill_names_to_campaign(conn.cursor(), campaign_id, capabilities)
+                        # feature_designer_agent.py sometimes emits a full descriptive sentence
+                        # here instead of a short label (seen up to 200+ chars) -- those aren't
+                        # tags, they're paragraph fragments, and rendering one as a tag pill
+                        # breaks the campaign card layout. Keep only capability strings short
+                        # enough to plausibly be a tag; real examples run ~15-40 chars
+                        # ("MLOps/LLMOps Production Engineering", "Turkey/Regional Connection").
+                        tag_like_capabilities = [
+                            c for c in capabilities if isinstance(c, str) and 0 < len(c.strip()) <= 60
+                        ]
+                        _link_skill_names_to_campaign(conn.cursor(), campaign_id, tag_like_capabilities)
                 except Exception:
                     logger.exception("Failed to auto-populate tags from %s", schema_path)
 

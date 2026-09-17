@@ -9,7 +9,7 @@ export function Badge({ children, tone = "gray" }) {
 
   return (
     <span
-      className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${
+      className={`inline-flex max-w-full items-center rounded-full border px-2.5 py-1 text-xs font-medium break-words ${
         tones[tone] || tones.gray
       }`}
     >
@@ -17,4 +17,3 @@ export function Badge({ children, tone = "gray" }) {
     </span>
   );
 }
-``

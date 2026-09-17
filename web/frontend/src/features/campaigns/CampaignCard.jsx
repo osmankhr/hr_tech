@@ -21,7 +21,7 @@ export function CampaignCard({ campaign, full, onOpen, onViewDetails, onEdit, on
       className="cursor-pointer rounded-lg border border-slate-200 p-4 transition hover:border-indigo-200 hover:bg-indigo-50/30"
     >
       <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-        <div>
+        <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
             <h4 className="font-semibold text-slate-900">
               {campaign.campaignName}
@@ -58,7 +58,7 @@ export function CampaignCard({ campaign, full, onOpen, onViewDetails, onEdit, on
           </div>
         </div>
 
-        <div className="grid grid-cols-3 gap-2 text-center text-sm">
+        <div className="grid w-full flex-shrink-0 grid-cols-3 gap-2 text-center text-sm md:w-auto">
           <MetricBox label="Target" value={campaign.targetProfiles} />
           <MetricBox label="Found" value={campaign.candidates} />
           <MetricBox label="Shortlist" value={campaign.shortlisted} />
