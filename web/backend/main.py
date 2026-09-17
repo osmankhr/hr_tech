@@ -1700,8 +1700,16 @@ def import_ranked_results(
                         # breaks the campaign card layout. Keep only capability strings short
                         # enough to plausibly be a tag; real examples run ~15-40 chars
                         # ("MLOps/LLMOps Production Engineering", "Turkey/Regional Connection").
+                        # Also reject anything containing a literal comma: desired_skills is
+                        # serialized end-to-end as a comma-joined string (campaign_summary's
+                        # GROUP_CONCAT, and the edit-campaign form's split(",")) with no escaping,
+                        # so a tag like "Production-grade systems integration (APIs, databases)"
+                        # gets silently sliced into garbage fragments ("...APIs" / "databases)")
+                        # on display. Skip rather than reformat -- safer than guessing how to
+                        # rewrite AI-generated text.
                         tag_like_capabilities = [
-                            c for c in capabilities if isinstance(c, str) and 0 < len(c.strip()) <= 60
+                            c for c in capabilities
+                            if isinstance(c, str) and 0 < len(c.strip()) <= 60 and "," not in c
                         ]
                         _link_skill_names_to_campaign(conn.cursor(), campaign_id, tag_like_capabilities)
                 except Exception:
