@@ -647,7 +647,10 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
       baseFormData.append("location", cleanedLocations.map((item) => item.name).join(", "));
       baseFormData.append("position_name", createForm.name.trim());
       baseFormData.append("experience", "3-5");
-      baseFormData.append("desired_skills", "NLP, LLM, Python");
+      // No default tags here on purpose -- a hardcoded "NLP, LLM, Python" used to apply to every
+      // new campaign regardless of role. Real tags come from a completed pipeline run's
+      // AI-designed capabilities, or a recruiter can add their own via Edit Manually.
+      baseFormData.append("desired_skills", "");
       baseFormData.append("target_profiles", "25");
 
       const created = await campaignApi.create(baseFormData);
