@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -244,6 +245,44 @@ class CandidateFilter:
             "text_excerpt": (candidate.get("text") or "")[:3000],
         }
 
+        # None of the TypeSafe checks depend on Claude's answer -- they're independent judgments
+        # on the same summary -- so start them in background threads now and join them after the
+        # Claude call below, instead of waiting until Claude returns to even begin. Claude's call
+        # takes 7-16s; each TypeSafe call takes ~700ms, so this hides their latency entirely
+        # rather than adding it on top.
+        typesafe_results: dict[str, Any] = {}
+
+        def _run_typesafe(key: str, fn, *args) -> None:
+            typesafe_results[key] = fn(*args)
+
+        typesafe_threads: list[threading.Thread] = []
+        if not _TYPESAFE_ENGLISH_CHECK_DISABLED:
+            t = threading.Thread(
+                target=_run_typesafe,
+                args=("english_idx", ask_score, summary, _ENGLISH_CONFIDENCE_INSTRUCTIONS, _ENGLISH_CONFIDENCE_CRITERIA),
+            )
+            t.start()
+            typesafe_threads.append(t)
+        if _TYPESAFE_RECOMMENDATION_ENABLED:
+            t = threading.Thread(
+                target=_run_typesafe,
+                args=(
+                    "recommendation_choice",
+                    ask_choice,
+                    {"filtering_criteria": self.criteria, "candidate_profile": summary},
+                    _RECOMMENDATION_INSTRUCTIONS,
+                    _RECOMMENDATION_CRITERIA,
+                ),
+            )
+            t.start()
+            typesafe_threads.append(t)
+        if not _TYPESAFE_ING_CHECK_DISABLED:
+            t = threading.Thread(
+                target=_run_typesafe, args=("ing_noul", ask_noul, summary, _ING_CHECK_INSTRUCTIONS)
+            )
+            t.start()
+            typesafe_threads.append(t)
+
         prompt = _PROMPT_TEMPLATE.format(
             criteria=self.criteria,
             candidate_json=json.dumps(summary, indent=2, ensure_ascii=False),
@@ -269,6 +308,12 @@ class CandidateFilter:
                 "reasoning": "Model call failed or returned unparseable output.",
             }
 
+        # Join the TypeSafe threads kicked off before the Claude call above -- each one has been
+        # running in the background for however long Claude's call just took (~7-16s vs. their
+        # ~700ms each), so these joins normally return immediately with no added wait.
+        for t in typesafe_threads:
+            t.join()
+
         extracted_location = review.get("candidate_location")
         extracted_title = review.get("candidate_job_title")
         extracted_employer = review.get("candidate_current_employer")
@@ -276,13 +321,12 @@ class CandidateFilter:
         if english_confidence not in {"LOW", "MEDIUM", "HIGH"}:
             english_confidence = "MEDIUM"
 
-        # english_confidence rating: ask TypeSafe directly from the same profile summary Claude
-        # saw. Falls back to Claude's own rating (computed above) if TypeSafe is disabled or the
-        # call fails for any reason -- never blocks on TypeSafe.
-        if not _TYPESAFE_ENGLISH_CHECK_DISABLED:
-            level_idx = ask_score(summary, _ENGLISH_CONFIDENCE_INSTRUCTIONS, _ENGLISH_CONFIDENCE_CRITERIA)
-            if level_idx is not None:
-                english_confidence = _ENGLISH_CONFIDENCE_LEVELS[level_idx]
+        # english_confidence rating: TypeSafe's answer (fetched above) wins when available.
+        # Falls back to Claude's own rating (computed above) if TypeSafe is disabled or the call
+        # failed for any reason -- never blocks on TypeSafe.
+        level_idx = typesafe_results.get("english_idx")
+        if level_idx is not None:
+            english_confidence = _ENGLISH_CONFIDENCE_LEVELS[level_idx]
 
         # ACCEPT/REJECT/PENDING recommendation: opt-in only (see _TYPESAFE_RECOMMENDATION_ENABLED
         # above for why) -- disabled by default, so this block is a no-op in production until
@@ -290,23 +334,19 @@ class CandidateFilter:
         # recommendation entirely; a failed call leaves Claude's recommendation untouched. The
         # ING-employer backstop below still applies on top regardless of which one decided.
         if _TYPESAFE_RECOMMENDATION_ENABLED:
-            choice = ask_choice(
-                {"filtering_criteria": self.criteria, "candidate_profile": summary},
-                _RECOMMENDATION_INSTRUCTIONS,
-                _RECOMMENDATION_CRITERIA,
-            )
+            choice = typesafe_results.get("recommendation_choice")
             if choice in {"ACCEPT", "REJECT", "PENDING"}:
                 review = {**review, "recommendation": choice}
 
-        # ING-employer check: ask TypeSafe directly from the same profile summary Claude saw
-        # (not just a regex over Claude's own extraction), so a candidate Claude mis-extracted or
-        # never flagged still gets caught. Falls back to the original regex-on-extraction check if
-        # TypeSafe is disabled or the call fails for any reason -- never blocks on TypeSafe.
+        # ING-employer check: TypeSafe's answer (fetched above) wins when available -- it judged
+        # the same profile summary Claude saw directly, not just a regex over Claude's own
+        # extraction, so a candidate Claude mis-extracted or never flagged still gets caught.
+        # Falls back to the original regex-on-extraction check if TypeSafe is disabled or the
+        # call failed for any reason -- never blocks on TypeSafe.
         is_ing = None
-        if not _TYPESAFE_ING_CHECK_DISABLED:
-            noul = ask_noul(summary, _ING_CHECK_INSTRUCTIONS)
-            if noul is not None:
-                is_ing = noul >= 0.5
+        noul = typesafe_results.get("ing_noul")
+        if noul is not None:
+            is_ing = noul >= 0.5
         if is_ing is None:
             is_ing = _is_ing_employer(extracted_employer)
 
