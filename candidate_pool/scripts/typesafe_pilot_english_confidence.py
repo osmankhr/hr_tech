@@ -26,16 +26,22 @@ API_URL = "https://api.typesafe.ai/v1/systemone"
 LEVELS = ["LOW", "MEDIUM", "HIGH"]
 CRITERIA = [
     "LOW: profile is entirely in another language with no English or international signals at all.",
-    "MEDIUM: signals are mixed or absent either way -- default here when there simply isn't enough "
-    "evidence to say (absence of evidence is not evidence of low English).",
-    "HIGH: clear positive evidence -- profile itself written in fluent English, an explicit English "
-    "proficiency/certification claim (IELTS/TOEFL, 'fluent in English'), or international study/work "
-    "history (foreign university, employer headquartered abroad, international team).",
+    "MEDIUM: the 'About' section (or equivalent) is short, telegraphic, or keyword/bullet-list style "
+    "-- e.g. a string of job titles, tech keywords, or sentence fragments -- even if grammatically "
+    "fine. This is extremely common on LinkedIn regardless of true fluency (many people write "
+    "minimal, list-style summaries), so it's weak evidence on its own. Also default here whenever "
+    "signals are mixed, weak, or you're genuinely unsure.",
+    "HIGH: either (a) multiple complete, well-constructed English sentences forming actual flowing "
+    "prose -- not just a title/keyword list -- that demonstrate real command of the language on "
+    "their own, even without external credentials; or (b) an explicit English proficiency/"
+    "certification claim (IELTS/TOEFL, 'fluent in English'); or (c) concrete international study/"
+    "work history (foreign university, employer headquartered abroad, international team).",
 ]
 
 INSTRUCTIONS = (
-    "Rate how confident you are that this candidate is proficient in English, based strictly on "
-    "what's observable in the profile below."
+    "Rate how confident you are that this candidate is proficient in English, based on the "
+    "profile below. A short list of job titles and keywords is not enough on its own -- look for "
+    "actual flowing prose, an explicit fluency/certification claim, or international history."
 )
 
 
