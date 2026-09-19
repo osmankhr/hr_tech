@@ -1,8 +1,9 @@
 """Thin client for TypeSafe AI's System One (Jev) API.
 
 Used as a cheap, structured-decision alternative to full LLM calls for specific sub-questions
-inside the pipeline (currently: the ING-employer check in filter.py, see typesafe_pilot_ing_check.py
-for how that was validated against production data before being wired in).
+inside the pipeline (currently: the ING-employer check and english_confidence rating in
+filter.py -- see typesafe_pilot_ing_check.py and typesafe_pilot_english_confidence.py for how
+each was validated against production data before being wired in).
 
 Never raises -- callers get None on any failure (missing key, network error, timeout, bad
 response) and are expected to fall back to their pre-TypeSafe behavior, same convention as
@@ -46,6 +47,34 @@ def ask_noul(state: Any, instructions: str, *, timeout: int = 15) -> float | Non
         )
         resp.raise_for_status()
         return float(resp.json()["answers"]["q"]["noul"])
+    except Exception:
+        logger.warning("TypeSafe API call failed", exc_info=True)
+        return None
+
+
+def ask_score(state: Any, instructions: str, criteria: list[str], *, timeout: int = 15) -> int | None:
+    """Ask a single Score question against an ordered list of level descriptions. Returns the
+    index (0-based) of the highest-probability level, or None if the call couldn't be made or
+    failed for any reason.
+    """
+    api_key = os.environ.get("TYPESAFE_API_KEY")
+    if not api_key:
+        return None
+
+    try:
+        resp = requests.post(
+            API_URL,
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json={
+                "state": state,
+                "model": DEFAULT_MODEL,
+                "questions": {"q": {"type": "score", "instructions": instructions, "criteria": criteria}},
+            },
+            timeout=timeout,
+        )
+        resp.raise_for_status()
+        probabilities = resp.json()["answers"]["q"]["probabilities"]
+        return int(max(probabilities, key=lambda level: probabilities[level]))
     except Exception:
         logger.warning("TypeSafe API call failed", exc_info=True)
         return None

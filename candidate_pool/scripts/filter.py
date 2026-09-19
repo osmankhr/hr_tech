@@ -11,7 +11,7 @@ from typing import Any
 
 import pipeline_status
 from llm_provider import call_model_text
-from typesafe_client import ask_noul
+from typesafe_client import ask_noul, ask_score
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +39,38 @@ _ING_CHECK_INSTRUCTIONS = (
     "'ING Hubs', 'ING Hubs Türkiye/Turkey', 'ING Groep', 'ING Direct', or any other obvious "
     "ING subsidiary/brand)? Answer no for companies that merely contain the letters 'ing' as "
     "part of an unrelated word or name (e.g. Consulting, Engineering, Marketing, Wingie, Turing)."
+)
+
+# Set to disable the TypeSafe/Jev english_confidence rating and always use Claude's own rating
+# instead. Validated 2026-09-19 against every MEDIUM example in the system plus a HIGH sample
+# (42 candidates pooled across all campaigns) through three prompt iterations -- see
+# typesafe_pilot_english_confidence.py: 81% agreement (90% on HIGH, 73% on MEDIUM), the best of
+# three tries. english_confidence is a soft display signal only (never affects
+# ACCEPT/REJECT/PENDING), so this bar is intentionally lower than the ING check's. Any single
+# failed TypeSafe call falls back to Claude's own rating automatically -- this flag is for
+# turning it off entirely, not per-call retry.
+_TYPESAFE_ENGLISH_CHECK_DISABLED = os.environ.get(
+    "CANDIDATE_POOL_DISABLE_TYPESAFE_ENGLISH_CHECK", ""
+).strip().lower() in {"1", "true", "yes"}
+
+_ENGLISH_CONFIDENCE_LEVELS = ["LOW", "MEDIUM", "HIGH"]
+_ENGLISH_CONFIDENCE_CRITERIA = [
+    "LOW: profile is entirely in another language with no English or international signals at all.",
+    "MEDIUM: the 'About' section (or equivalent) is short, telegraphic, or keyword/bullet-list style "
+    "-- e.g. a string of job titles, tech keywords, or sentence fragments -- even if grammatically "
+    "fine. This is extremely common on LinkedIn regardless of true fluency (many people write "
+    "minimal, list-style summaries), so it's weak evidence on its own. Also default here whenever "
+    "signals are mixed, weak, or you're genuinely unsure.",
+    "HIGH: either (a) multiple complete, well-constructed English sentences forming actual flowing "
+    "prose -- not just a title/keyword list -- that demonstrate real command of the language on "
+    "their own, even without external credentials; or (b) an explicit English proficiency/"
+    "certification claim (IELTS/TOEFL, 'fluent in English'); or (c) concrete international study/"
+    "work history (foreign university, employer headquartered abroad, international team).",
+]
+_ENGLISH_CONFIDENCE_INSTRUCTIONS = (
+    "Rate how confident you are that this candidate is proficient in English, based on the "
+    "profile below. A short list of job titles and keywords is not enough on its own -- look for "
+    "actual flowing prose, an explicit fluency/certification claim, or international history."
 )
 
 _SYSTEM_INSTRUCTIONS = """\
@@ -198,6 +230,14 @@ class CandidateFilter:
         english_confidence = str(review.get("english_confidence") or "MEDIUM").upper()
         if english_confidence not in {"LOW", "MEDIUM", "HIGH"}:
             english_confidence = "MEDIUM"
+
+        # english_confidence rating: ask TypeSafe directly from the same profile summary Claude
+        # saw. Falls back to Claude's own rating (computed above) if TypeSafe is disabled or the
+        # call fails for any reason -- never blocks on TypeSafe.
+        if not _TYPESAFE_ENGLISH_CHECK_DISABLED:
+            level_idx = ask_score(summary, _ENGLISH_CONFIDENCE_INSTRUCTIONS, _ENGLISH_CONFIDENCE_CRITERIA)
+            if level_idx is not None:
+                english_confidence = _ENGLISH_CONFIDENCE_LEVELS[level_idx]
 
         # ING-employer check: ask TypeSafe directly from the same profile summary Claude saw
         # (not just a regex over Claude's own extraction), so a candidate Claude mis-extracted or
