@@ -133,6 +133,9 @@ see `CANDIDATE_POOL_FAIL_MODE` below.
 - `APOLLO_API_KEY` — [apollo.io](https://apollo.io) API key, only needed when
   `search.provider: apollo`
 - `claude` CLI — Claude Code must be installed and authenticated
+- `TYPESAFE_API_KEY` — [typesafe.ai](https://typesafe.ai) API key, optional; only used for the
+  ING-employer check in `filter.py`. If unset, that check silently falls back to its original
+  regex-only behavior — nothing else in the pipeline depends on it.
 
 ## Environment variables
 
@@ -148,3 +151,4 @@ exposed in the web UI, it's engineer-only tuning:
 | `CANDIDATE_POOL_CODEX_MODEL` | `gpt-5.6-luna` | Model used for Codex-provider calls. |
 | `CANDIDATE_POOL_CLAUDE_PROFILES` | `aiworkspacetr,richard` | Ordered fallback chain of Claude CLI `$HOME` profiles under `/home/osman/n8n-data/claude-profiles/` (production server only). |
 | `CANDIDATE_POOL_FAIL_MODE` | `pending` | What `filter.py` does when a candidate's AI review call fails: `pending` flags it for manual review (safe default — never set anything else on the deployed server), `reject` auto-rejects it instead, which is faster for local iteration but silently drops real candidates on any outage. |
+| `CANDIDATE_POOL_DISABLE_TYPESAFE_ING_CHECK` | *(unset)* | Set to `1`/`true` to bypass the TypeSafe-based ING-employer check entirely and always use the original regex-only check, e.g. if TypeSafe's judgment ever looks wrong in practice. A failed/missing-key TypeSafe call already falls back to the regex automatically — this flag is for a full revert, not per-call retry. |
