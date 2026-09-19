@@ -11,7 +11,7 @@ from typing import Any
 
 import pipeline_status
 from llm_provider import call_model_text
-from typesafe_client import ask_noul, ask_score
+from typesafe_client import ask_choice, ask_noul, ask_score
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +72,51 @@ _ENGLISH_CONFIDENCE_INSTRUCTIONS = (
     "profile below. A short list of job titles and keywords is not enough on its own -- look for "
     "actual flowing prose, an explicit fluency/certification claim, or international history."
 )
+
+# Opt-in, unlike the two flags above -- this one defaults OFF. Validated 2026-09-19 across three
+# prompt iterations against 35-36 candidates (data-ai-chapter-lead-engineer_20260826_070714, all
+# three ACCEPT/REJECT/PENDING outcomes): best result was 81% agreement with REJECT at 100%, but
+# ACCEPT dropped to 67% as a direct tradeoff -- Claude gives some candidates credit for *leading*
+# ML initiatives without hands-on coding, a nuance this prompt deliberately excludes to avoid
+# false ACCEPTs, and that tradeoff didn't resolve cleanly after three tries (see
+# typesafe_pilot_recommendation.py for the full history). Given this drives the actual
+# ACCEPT/REJECT/PENDING decision -- the highest-stakes of the three checks -- production stays on
+# Claude alone unless this is explicitly turned on for further testing.
+_TYPESAFE_RECOMMENDATION_ENABLED = os.environ.get(
+    "CANDIDATE_POOL_ENABLE_TYPESAFE_RECOMMENDATION", ""
+).strip().lower() in {"1", "true", "yes"}
+
+_RECOMMENDATION_INSTRUCTIONS = (
+    "Decide whether this candidate should be accepted, rejected, or marked pending for the role "
+    "described in the filtering criteria, based on the candidate profile. Both are given in the "
+    "state. If the criteria include a location requirement, treat it as a hard requirement: only "
+    "choose ACCEPT when the candidate's real location clearly and unambiguously satisfies it. "
+    "Watch specifically for CONFLICTING location signals -- e.g. a profile header naming one city "
+    "while the current employer and recent role history are all listed in a different city or "
+    "country. That conflict means the real current location cannot be determined, even though "
+    "the profile mentions a location -- choose PENDING in that case, not a guess at which signal "
+    "to trust. Only choose REJECT when the location is clearly and consistently stated and it "
+    "does not satisfy the requirement. Never resolve a genuine conflict by picking a side. "
+    "\n\nWhen a criterion asks for a 'strong background' or 'foundation' in a specific technical "
+    "discipline (e.g. ML, not just adjacent/supporting work), read it strictly: working with data "
+    "pipelines, ETL, data platforms/warehousing, or applying a pre-built GenAI/RAG/LLM tool as an "
+    "end user does NOT by itself demonstrate a strong foundation in that discipline. Look "
+    "specifically for hands-on model building, training, evaluation, or algorithm design/research "
+    "experience in that discipline. A candidate whose real substance is adjacent-but-different "
+    "work should be REJECTed for that criterion, not ACCEPTed on the assumption that adjacent "
+    "experience is close enough."
+)
+_RECOMMENDATION_CRITERIA = {
+    "ACCEPT": "Candidate satisfies the Accept criteria and any hard requirements are clearly, "
+    "unambiguously met -- no conflicting signals about them.",
+    "REJECT": "Candidate clearly and consistently fails a hard requirement (no conflicting signals "
+    "about it), or matches a Reject condition in the criteria.",
+    "PENDING": "A hard requirement can't be determined from the profile text, OR there are "
+    "conflicting signals about it (e.g. the profile header states one location but the person's "
+    "actual employer/role history points to a different one) -- don't guess which signal to "
+    "trust, mark it PENDING. Also use this when there isn't enough information to confidently "
+    "decide either way on a non-hard-requirement criterion.",
+}
 
 _SYSTEM_INSTRUCTIONS = """\
 You are a recruitment assistant. Review the candidate profile against the provided \
@@ -238,6 +283,20 @@ class CandidateFilter:
             level_idx = ask_score(summary, _ENGLISH_CONFIDENCE_INSTRUCTIONS, _ENGLISH_CONFIDENCE_CRITERIA)
             if level_idx is not None:
                 english_confidence = _ENGLISH_CONFIDENCE_LEVELS[level_idx]
+
+        # ACCEPT/REJECT/PENDING recommendation: opt-in only (see _TYPESAFE_RECOMMENDATION_ENABLED
+        # above for why) -- disabled by default, so this block is a no-op in production until
+        # explicitly turned on. When enabled, a successful TypeSafe call replaces Claude's
+        # recommendation entirely; a failed call leaves Claude's recommendation untouched. The
+        # ING-employer backstop below still applies on top regardless of which one decided.
+        if _TYPESAFE_RECOMMENDATION_ENABLED:
+            choice = ask_choice(
+                {"filtering_criteria": self.criteria, "candidate_profile": summary},
+                _RECOMMENDATION_INSTRUCTIONS,
+                _RECOMMENDATION_CRITERIA,
+            )
+            if choice in {"ACCEPT", "REJECT", "PENDING"}:
+                review = {**review, "recommendation": choice}
 
         # ING-employer check: ask TypeSafe directly from the same profile summary Claude saw
         # (not just a regex over Claude's own extraction), so a candidate Claude mis-extracted or

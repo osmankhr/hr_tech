@@ -34,15 +34,32 @@ INSTRUCTIONS = (
     "Decide whether this candidate should be accepted, rejected, or marked pending for the role "
     "described in the filtering criteria, based on the candidate profile. Both are given in the "
     "state. If the criteria include a location requirement, treat it as a hard requirement: only "
-    "choose ACCEPT when the candidate's real location clearly satisfies it. If it clearly does "
-    "not, choose REJECT. If a hard requirement (like location) cannot be determined from the "
-    "profile text, choose PENDING rather than guessing."
+    "choose ACCEPT when the candidate's real location clearly and unambiguously satisfies it. "
+    "Watch specifically for CONFLICTING location signals -- e.g. a profile header naming one city "
+    "while the current employer and recent role history are all listed in a different city or "
+    "country. That conflict means the real current location cannot be determined, even though "
+    "the profile mentions a location -- choose PENDING in that case, not a guess at which signal "
+    "to trust. Only choose REJECT when the location is clearly and consistently stated and it "
+    "does not satisfy the requirement. Never resolve a genuine conflict by picking a side. "
+    "\n\nWhen a criterion asks for a 'strong background' or 'foundation' in a specific technical "
+    "discipline (e.g. ML, not just adjacent/supporting work), read it strictly: working with data "
+    "pipelines, ETL, data platforms/warehousing, or applying a pre-built GenAI/RAG/LLM tool as an "
+    "end user does NOT by itself demonstrate a strong foundation in that discipline. Look "
+    "specifically for hands-on model building, training, evaluation, or algorithm design/research "
+    "experience in that discipline. A candidate whose real substance is adjacent-but-different "
+    "work should be REJECTed for that criterion, not ACCEPTed on the assumption that adjacent "
+    "experience is close enough."
 )
 CRITERIA = {
-    "ACCEPT": "Candidate satisfies the Accept criteria and any hard requirements are clearly met.",
-    "REJECT": "Candidate clearly fails a hard requirement, or matches a Reject condition in the criteria.",
-    "PENDING": "A hard requirement can't be determined from the profile text, or there isn't enough "
-    "information in the profile to confidently decide either way.",
+    "ACCEPT": "Candidate satisfies the Accept criteria and any hard requirements are clearly, "
+    "unambiguously met -- no conflicting signals about them.",
+    "REJECT": "Candidate clearly and consistently fails a hard requirement (no conflicting signals "
+    "about it), or matches a Reject condition in the criteria.",
+    "PENDING": "A hard requirement can't be determined from the profile text, OR there are "
+    "conflicting signals about it (e.g. the profile header states one location but the person's "
+    "actual employer/role history points to a different one) -- don't guess which signal to "
+    "trust, mark it PENDING. Also use this when there isn't enough information to confidently "
+    "decide either way on a non-hard-requirement criterion.",
 }
 
 
@@ -98,9 +115,16 @@ def main() -> None:
     candidates = json.loads((campaign_dir / "data" / "filtered_results.json").read_text(encoding="utf-8"))
 
     non_ing = [c for c in candidates if not is_ing_forced_reject(c)]
+    # Exclude candidates Claude never actually reviewed (ran out of max_candidates budget, got a
+    # synthetic PENDING stub) -- comparing TypeSafe's real judgment against a placeholder isn't a
+    # real disagreement, it inflates the apparent PENDING mismatch rate for free.
+    reviewed = [
+        c for c in non_ing
+        if "beyond max_candidates cap" not in (c.get("ai_review", {}).get("main_concern") or "")
+    ]
     # Balance the sample across the three outcomes rather than taking them in original order.
     by_rec: dict[str, list[dict]] = {"ACCEPT": [], "REJECT": [], "PENDING": []}
-    for c in non_ing:
+    for c in reviewed:
         rec = c.get("ai_review", {}).get("recommendation")
         if rec in by_rec:
             by_rec[rec].append(c)
