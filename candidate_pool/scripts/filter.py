@@ -11,6 +11,7 @@ from typing import Any
 
 import pipeline_status
 from llm_provider import call_model_text
+from typesafe_client import ask_noul
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +23,23 @@ _FAIL_MODE = os.environ.get("CANDIDATE_POOL_FAIL_MODE", "pending").strip().lower
 if _FAIL_MODE not in {"pending", "reject"}:
     logger.warning("Unknown CANDIDATE_POOL_FAIL_MODE=%r; defaulting to 'pending'", _FAIL_MODE)
     _FAIL_MODE = "pending"
+
+# Set to disable the TypeSafe/Jev ING-employer check and revert to the original
+# regex-on-Claude's-extraction-only behavior -- e.g. if TypeSafe has an outage/incident, or the
+# key gets revoked, or its judgment ever looks wrong on a real campaign. Validated 2026-09-19
+# against a real campaign's ING-employer decisions: 33/33 agreement (see
+# typesafe_pilot_ing_check.py). Even when enabled, any single failed TypeSafe call falls back to
+# the regex check automatically -- this flag is for turning it off entirely, not per-call retry.
+_TYPESAFE_ING_CHECK_DISABLED = os.environ.get(
+    "CANDIDATE_POOL_DISABLE_TYPESAFE_ING_CHECK", ""
+).strip().lower() in {"1", "true", "yes"}
+
+_ING_CHECK_INSTRUCTIONS = (
+    "Is this candidate CURRENTLY employed at ING or a clear ING entity (e.g. 'ING Bank', "
+    "'ING Hubs', 'ING Hubs Türkiye/Turkey', 'ING Groep', 'ING Direct', or any other obvious "
+    "ING subsidiary/brand)? Answer no for companies that merely contain the letters 'ing' as "
+    "part of an unrelated word or name (e.g. Consulting, Engineering, Marketing, Wingie, Turing)."
+)
 
 _SYSTEM_INSTRUCTIONS = """\
 You are a recruitment assistant. Review the candidate profile against the provided \
@@ -181,13 +199,23 @@ class CandidateFilter:
         if english_confidence not in {"LOW", "MEDIUM", "HIGH"}:
             english_confidence = "MEDIUM"
 
-        # Deterministic backstop: even if the model's own reasoning missed the standing
-        # ING-exclusion rule above, don't let a current ING employee through as ACCEPT/PENDING.
-        if _is_ing_employer(extracted_employer) and review.get("recommendation") != "REJECT":
+        # ING-employer check: ask TypeSafe directly from the same profile summary Claude saw
+        # (not just a regex over Claude's own extraction), so a candidate Claude mis-extracted or
+        # never flagged still gets caught. Falls back to the original regex-on-extraction check if
+        # TypeSafe is disabled or the call fails for any reason -- never blocks on TypeSafe.
+        is_ing = None
+        if not _TYPESAFE_ING_CHECK_DISABLED:
+            noul = ask_noul(summary, _ING_CHECK_INSTRUCTIONS)
+            if noul is not None:
+                is_ing = noul >= 0.5
+        if is_ing is None:
+            is_ing = _is_ing_employer(extracted_employer)
+
+        if is_ing and review.get("recommendation") != "REJECT":
             review = {
                 **review,
                 "recommendation": "REJECT",
-                "main_concern": f"Candidate's current employer ({extracted_employer}) appears to be ING.",
+                "main_concern": f"Candidate's current employer ({extracted_employer or 'unknown'}) appears to be ING.",
             }
 
         return {
