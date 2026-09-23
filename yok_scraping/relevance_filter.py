@@ -15,12 +15,20 @@ from __future__ import annotations
 import json
 import logging
 import re
+import shutil
 import subprocess
 
 logger = logging.getLogger(__name__)
 
 MODEL = "claude-sonnet-5"
 TIMEOUT_SEC = 120
+
+# cron runs with a minimal PATH that doesn't include ~/.local/bin, so a bare "claude" silently
+# resolves to nothing there (this filter fell back to "keep everyone" on every cron run since
+# deployment as a result, 2026-09-14 through 2026-09-21, without ever actually filtering).
+# shutil.which() still finds it in a normal interactive shell where PATH is complete; the
+# hardcoded fallback only kicks in when PATH resolution comes up empty, e.g. under cron.
+_CLAUDE_BIN = shutil.which("claude") or "/home/osman/.local/bin/claude"
 
 _SYSTEM_PROMPT = (
     "You screen Turkish university thesis authors for a data science / ML recruiting pipeline. "
@@ -57,7 +65,7 @@ def classify_new_authors(groups: list[dict]) -> dict[int, bool]:
         '[{"index": 0, "keep": true}, {"index": 1, "keep": false}], one entry per author, no prose.'
     )
 
-    cmd = ["claude", "--print", "--model", MODEL, "--tools", "", "--output-format", "json",
+    cmd = [_CLAUDE_BIN, "--print", "--model", MODEL, "--tools", "", "--output-format", "json",
            "--system-prompt", _SYSTEM_PROMPT]
 
     try:
