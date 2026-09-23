@@ -88,17 +88,24 @@ flagging if hardening auth further.
 | `update(id, formData)` | PUT `/campaigns/{id}` |
 | `remove(id)` | DELETE `/campaigns/{id}` |
 | `setupPipeline(id, payload)` | POST `/campaigns/{id}/pipeline/setup` (FormData: `pipeline_name`, `pipeline_description`, `locations_json`, `job_description`, `filter_criteria`) |
-| `importRankedResults(id, path)` | POST `/campaigns/{id}/pipeline/import-ranked` |
+| `getTemplates()` / `saveTemplate(payload)` | GET/POST `/campaign-templates` — reusable saved configs for the create form |
+| `getConfigVersions(id)` | GET `/campaigns/{id}/pipeline/config-versions` |
+| `updateConfig(id, payload)` | PUT `/campaigns/{id}/pipeline/config` |
+| `importRankedResults(id, path, configVersionId)` | POST `/campaigns/{id}/pipeline/import-ranked` |
 | `getPipelineRuns(id)` | GET `/campaigns/{id}/pipeline/runs` |
-| `getPipelineStages(id)` | GET `/campaigns/{id}/pipeline/stages` |
-| `getGeneratedQueries(id)` / `saveGeneratedQueries(id, queries)` | GET/PUT `/campaigns/{id}/pipeline/queries` |
-| `getSearchResults(id, limitPerLocation)` | GET `/campaigns/{id}/pipeline/search-results` |
-| `getFilteredResults(id, limit)` | GET `/campaigns/{id}/pipeline/filtered-results` |
 | `getSearchResultsStatus` / `getRankedResultsStatus` | GET `/pipeline/search-results-status` / `/ranked-results-status` |
-| `getRankings(id)` | GET `/campaigns/{id}/rankings` |
+| `getRankings(id, configVersionId)` | GET `/campaigns/{id}/rankings` |
+| `getScoringExplainer(id, configVersionId)` / `getUsageSummary(id, configVersionId)` | GET `/pipeline/scoring-explainer` / `/usage-summary` |
 | `runPipeline(id, runType, maxCandidates)` | POST `/campaigns/{id}/pipeline/run` |
-| `getCandidatesByCampaign(id, page, pageSize)` | GET `/campaigns/{id}/candidates` |
-| `exportRankedCsv` / `exportSearchCsv` / `exportSearchExcel` | GET `/pipeline/export-*` — **bypass `httpClient`**, use raw `fetch` + manual Blob/object-URL download (needed for binary/file responses); each duplicates its own auth-header + error handling (candidate for a shared helper). |
+| `getCandidatesByCampaign(id, page, pageSize, configVersionId)` | GET `/campaigns/{id}/candidates` |
+| `exportRankedCsv(id, configVersionId)` / `exportSearchCsv(id, configVersionId)` | GET `/pipeline/export-*` — **bypass `httpClient`** via the module-local `downloadFile()` helper (raw `fetch` + Blob/object-URL, needed for binary responses) |
+
+Every pipeline read that touches artifacts takes an optional `configVersionId`; the module-local
+`versionQuery()` helper appends `config_version_id=…`. Omitting it means "the current version".
+
+⚠️ **Correction to earlier versions of this doc**: `getPipelineStages`, `getGeneratedQueries`/
+`saveGeneratedQueries`, `getSearchResults`, `getFilteredResults` and `exportSearchExcel` were
+listed here but don't exist in `campaignApi.js` (nor do their backend routes).
 
 ### `candidateApi.js`
 `getAll()`, `getById(id)`, `update(id, formData)`, `refresh()` (`POST /candidates/refresh`),
@@ -163,19 +170,52 @@ Owns nearly all app-level state; no router, manual `view` tab switching
 - Navigation/search/filter state for the candidate database view.
 - Create-campaign flow state (`showCreate`, `createForm`, `createBusy/Error`).
 - Modal/selection state (selected/editing/deleting campaign or candidate).
-- **Dashboard tab**: per-campaign paginated candidate list.
+- **Dashboard tab**: per-campaign paginated candidate list, plus `dashboardConfigVersions` /
+  `dashboardVersionId` — a **config-version selector** (rendered only when >1 version exists)
+  that switches the candidate list and the scoring explainer to that version's results.
 - **Pipeline tab** (largest chunk): current pipeline campaign, `pipelineRuns`, `rankings`,
-  `pipelineStages`, editable `queryDraft`, `searchPreview`, `filteredPreview`, per-campaign
-  `campaignArtifactStatus` map, per-export-button busy-state map.
+  `configVersions`, `pipelineVersionId` (which version's results are on screen),
+  `configEditOpen/Busy/Error`, per-campaign `campaignArtifactStatus` map, per-export-button
+  busy-state map.
 - `autoImportedRunIdsRef` — tracks which pipeline run IDs already triggered an auto-import of
   ranked results, to avoid duplicate imports across SSE re-renders.
+- `pickVersionId(previous, versions)` — keeps an explicit selection if it still exists (so a
+  background refresh doesn't yank the recruiter off the version they're reading), else falls back
+  to the current version.
+
+⚠️ **Config-version selections are campaign-scoped, on purpose.** `pipelineVersionState` /
+`dashboardVersionState` hold `{campaignId, rows, selectedId}`, and `configVersions`,
+`pipelineVersionId`, `dashboardConfigVersions`, `dashboardVersionId` are all *derived during
+render* by comparing the stored `campaignId` to the selected campaign. Version ids are unique
+across all campaigns, so a leftover selection from the previous campaign is a valid-looking id
+belonging to someone else; sending it produced a **404 "Config version not found"** banner on
+every campaign switch. Clearing it in an effect is too late — the rankings/usage/candidates
+fetch effects run in the same commit as the switch and would fire once on the stale pair. Keep
+the derivation at render time; don't "simplify" these back into plain `useState` values.
+
+**Config versioning UX**: `PipelineConfigVersionList` rows are selectable and drive
+`pipelineVersionId`; `rankings` and `usageSummary` reload on version change. `PipelineConfigEditModal`
+always edits the **current** version (runs and edits never apply to an older one — a note appears
+when viewing one), and `willCreateNewVersion` mirrors the backend's has-results rule so the copy
+tells the truth. See [backend.md](./backend.md) §5.1.
+
+**Live run progress**: `pipelineProgress` state holds the SSE payload's `progress` object, which
+names the phase the pipeline subprocess is currently in. The "Pipeline is running" box renders it
+as a heading ("AI reviewing candidates"), a `Step N of M` counter, a chip stepper
+(done/active/pending) driven by `PIPELINE_PHASE_LABELS` in `constants/defaults.js`, and a
+determinate bar when the phase reports `current`/`total`. Derived by `pipelinePhaseSteps` /
+`pipelineStepLabel` / `pipelineProgressPercent`; all degrade to the old generic "Pipeline is
+running" copy when the backend sends no `progress`. Reset when the selected campaign changes, so
+one campaign's progress never leaks into another's view.
 
 **Real-time pipeline updates**: opens `new EventSource(".../pipeline/events?token=...")`
 (token in query param because `EventSource` can't set custom headers) whenever the selected
-pipeline campaign changes. On `pipeline_run_update`: merges the run into `pipelineRuns`;
-auto-calls `campaignApi.importRankedResults` the first time a `full`/`rank` run completes;
-refreshes rankings/stages/query-and-search-previews/global candidates/campaigns and artifact
-statuses. Closes the `EventSource` on unmount or dependency change.
+pipeline campaign changes. On `pipeline_run_update`: stores `payload.progress`; merges the run
+into `pipelineRuns`;
+auto-calls `campaignApi.importRankedResults` the first time a `full`/`rank` run completes —
+passing `run.config_version_id` so results are attributed to the version that produced them, not
+whatever is current; then refreshes rankings/global candidates/campaigns/artifact statuses/config
+versions. Closes the `EventSource` on unmount or dependency change.
 
 **Campaign creation is a two-step backend call**: `campaignApi.create` (baseline `FormData` →
 `campaign_id`) then `campaignApi.setupPipeline(campaignId, ...)` (writes `campaign.yaml` +
@@ -229,6 +269,11 @@ This page is the composition root for essentially every feature/UI component in 
 - `PipelineCampaignCreateForm.jsx` — the actual **creation** form: name, description, dynamic
   locations list (name+hint rows, add/remove), large Job Description + Filter Criteria markdown
   textareas — these two feed `campaignApi.setupPipeline`'s `job_description`/`filter_criteria`.
+  Also has a "Load From Saved Config" dropdown backed by `campaignApi.getTemplates()`.
+- `PipelineConfigEditModal.jsx` — edits an existing campaign's config. Shows an amber warning
+  when saving will branch a new version vs. a neutral note when it'll update in place.
+- `PipelineConfigVersionList.jsx` — selectable version history; each row shows `Current` /
+  `Viewing` badges, has-results state, and per-version candidate/accepted/ranked counts.
 
 ### `src/features/candidates/`
 - `CandidateCard.jsx` — summary card with status badge (via `getCandidateStatusTone`), rank
@@ -294,7 +339,7 @@ App
    `CampaignCard` — verify before relying on it for new export-button wiring.
 4. `CandidateEditModal` has a hook called after an early-return guard — fragile, fix before adding
    more hooks to that component.
-5. Export functions (`exportSearchCsv`/`exportSearchExcel`/`exportRankedCsv`) duplicate
-   blob-download + auth-header logic three times — candidate for a shared helper.
+5. ~~Export functions duplicate blob-download + auth-header logic~~ — fixed: both now go through
+   the shared `downloadFile()` helper in `campaignApi.js`.
 6. Bearer token in `localStorage` — acceptable for now per project scope, but a real XSS
    vulnerability vector if introduced elsewhere.

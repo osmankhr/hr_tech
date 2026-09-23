@@ -197,7 +197,11 @@ sections).
   - `_review_candidate(candidate)` — builds a summary (url/title/location/highlights/text excerpt
     ≤3000 chars), calls the model, merges the AI-derived `candidate_location`/`candidate_job_title`
     back onto the candidate (overriding the raw search-bucket location, which is not verified fact).
-    On failure, substitutes a graceful `PENDING`/`LOW` stub review — **never crashes the batch**.
+    On failure, substitutes a graceful **`REJECT`**/`LOW` stub review — **never crashes the batch**.
+    ⚠️ This stub was `PENDING` until the Codex switch: once a handful of timeouts per run became
+    expected (§4.7), `PENDING` meant silently dumping them into the recruiter's manual queue with
+    no evidence attached. Note the distinct `PENDING` stub in `run()` for candidates skipped by
+    the `max_candidates` cap — that one is *not* an error and stays `PENDING`.
   - `_select_candidates_for_review(all_candidates)` — **query-balanced capped selection**: groups
     candidates by `(search_bucket, query)`, takes each group's top-scoring candidate first (ensures
     every query gets at least one review before the cap is spent), then round-robins remaining
@@ -225,9 +229,26 @@ Equivalent to `run_campaign.py --rank-only` but independent of the rest of the p
 Every LLM call in the pipeline (`generate_queries.py`, `filter.py`,
 `ranking/agents/agent_base.py`) flows through this module's `call_model_text`.
 
-- **Provider choice** (`choose_provider()`): env var `CANDIDATE_POOL_LLM_PROVIDER` (`claude`/
-  `copilot`) wins if set; otherwise heuristically picks `copilot` if the local git/`gh` identity
-  matches `CANDIDATE_POOL_COPILOT_USERS` (default `"MG77XN_ingcp"`), else defaults to `claude`.
+- **Provider choice** (`choose_provider()`): returns `claude` | `copilot` | `codex`. Env var
+  `CANDIDATE_POOL_LLM_PROVIDER` wins if set to one of those; otherwise auto-detection routes a
+  developer's own machine to their local CLI and everything else (i.e. the deployed server) to
+  Claude:
+
+  | Check | Result |
+  |---|---|
+  | local identity ∈ `CANDIDATE_POOL_CODEX_USERS` (default `"yigit-can-ozkaya"`) | `codex` |
+  | local identity ∈ `CANDIDATE_POOL_COPILOT_USERS` (default **empty**) | `copilot` |
+  | otherwise | `claude` |
+
+  "Local identity" is the union of three sources (`_detect_local_identities()`, `lru_cache`d):
+  `git config user.name`, **the last commit's author (`git log -1 --format=%an`)**, and any
+  `gh auth status` logins. The commit-author source matters: on a machine with no `user.name`
+  set and no `gh` installed — which is the actual state of the dev laptop — it's the only signal
+  that resolves, and without it detection silently fell through to `claude` and then failed
+  every call because `claude` isn't installed there.
+
+  ⚠️ Copilot is **no longer auto-selected for anybody** (it used to key off the ING account
+  `MG77XN_ingcp`). The code path still works but is opt-in via env only.
 - **Claude CLI invocation pattern** (the "minimal overhead" convention — see PLAN.md history):
   ```
   ["claude", "--print", "--model", <model>, "--tools", "", "--output-format", "json"]
@@ -255,6 +276,76 @@ Every LLM call in the pipeline (`generate_queries.py`, `filter.py`,
 broad, unrestricted permissions for what should be a one-shot classification call. Inconsistent
 with the Claude path's `--tools ""` (fully locked down). Worth hardening if this path is ever
 exercised in production.
+
+### 4.8b `scripts/llm_codex.py` — Codex CLI wrapper
+**`class CodexClient`** — subprocess wrapper around `codex exec`, used when `choose_provider()`
+picks Codex (the default on the dev laptop). Same `complete(system=..., user=...)` contract as
+`CopilotClient`.
+
+- **Invocation**:
+  ```
+  codex exec --skip-git-repo-check -C <scratch tmpdir> -s read-only
+             -c approval_policy="never" --color never --json --ephemeral
+             -o <scratch>/last_message.txt [-m <model>] -
+  ```
+  `--ephemeral` matters at this call volume: without it every call leaves a rollout JSONL in
+  `~/.codex/sessions/`, so one campaign (300+ calls) permanently litters hundreds of files.
+  Prompt goes in on **stdin** (trailing `-`), so prompt size isn't capped by the shell's arg
+  limit. `codex exec` is an agent runner, not a completion endpoint, so unlike the Claude path
+  there's no `--tools ""` to strip capabilities — instead it's boxed in with a read-only
+  sandbox, a throwaway cwd (so it can't read this repo) and no approval prompts.
+- **Reading the answer**: from the `--output-last-message` file, *not* by scraping the stream.
+  Event `type` names have changed across Codex CLI versions; the file is stable.
+- **`_parse_stream`** only mines the JSONL for (a) the last error message and (b) token usage,
+  matching on *shape* (any event with a `usage` dict / an error message) rather than exact
+  `type` values, so a CLI upgrade degrades to "no usage data" instead of breaking.
+- **Model**: defaults to `gpt-5.6-luna` (cheap ChatGPT-login model). Override with
+  `CANDIDATE_POOL_CODEX_MODEL`. ChatGPT-account auth cannot use `*-codex` IDs (`gpt-5-codex`
+  etc.) — those are API-key-only and 400. campaign.yaml's `model:` keys name Claude models and
+  are deliberately ignored here (same convention as `COPILOT_FIXED_MODEL`). Needs Codex CLI
+  ≥0.144 (`codex --version`); 0.46.0's built-in default is `gpt-5-codex` and will fail.
+- **Usage accounting**: input/output/cached tokens + wall-clock duration feed the shared
+  accumulator; `cost_usd` stays 0 because Codex bills a subscription, not per call.
+- **Auth**: session credentials in `~/.codex/auth.json`. An expired token surfaces as
+  `Failed to refresh token: 401 Unauthorized`; `CodexClient` detects that and raises a
+  `RuntimeError` telling you to run `codex login`. As with every provider, `call_model_text`
+  swallows it and returns `None`, so the batch continues.
+- **Timeouts — deliberately not raised, and no retry.** Codex costs far more per call than
+  `claude --print`: it boots an agent runtime (~12k tokens of fixed overhead, several seconds of
+  startup), and with 20 concurrent workers a trivial call measured 6.6s idle vs 18s under load.
+  A few calls per run therefore die on the shared 120s timeout. That is **accepted on purpose** —
+  run wall-clock time matters more than rescuing them — and `filter.py` turns a failed review
+  into `REJECT` (§4.4) so the loss is bounded. Don't "fix" this by adding a longer timeout or a
+  retry without checking that trade-off first.
+- **Error messages worth recognizing** (all raised with remediation text by `_complete_via_cli`):
+  `not supported when using Codex with a ChatGPT account` = a `*-codex` model ID, which is
+  API-key-only; `requires a newer version of Codex` = CLI too old (`npm install -g
+  @openai/codex@latest`).
+
+### 4.8c `scripts/pipeline_status.py` — live phase reporting to the web UI
+The backend runs `run_campaign.py` as an opaque subprocess and only learns the result when it
+exits, so the filesystem is the only channel back to the UI mid-run. Each phase writes
+`data/pipeline_status.json`:
+
+```json
+{"phase": "filter", "label": "AI reviewing candidates", "current": 45, "total": 243,
+ "phases": ["queries","search","filter","ranking","report"], "updated_at": "..."}
+```
+
+- `write(campaign_dir, phase, *, current, total, detail, phases)` / `clear(campaign_dir)`.
+- **Atomic**: temp file + `os.replace`, because the backend polls on its own 2s schedule and
+  must never read a half-written file.
+- **Never raises** — progress reporting is cosmetic and must not take a run down.
+- `phases` is the list the run will *actually* visit, computed up front in `run_campaign.py` from
+  the `--*-only` flags, so a partial run doesn't advertise stages it will never reach. It's
+  declared once and cached in a module global, so the per-item writes from `filter.py` /
+  `ranking/pipeline.py` carry it forward instead of blanking the UI's stepper mid-phase.
+- Per-item counts are written from the `as_completed` **collecting loop**, not from inside the
+  worker function — one writer despite the thread pool.
+- `run_campaign.py` clears it in a `finally`, so a crashed run doesn't leave a phase looking
+  perpetually active.
+
+Consumed by `GET /api/campaigns/{id}/pipeline/events` (see [backend.md](./backend.md) §5).
 
 ### 4.9 `scripts/ranking/` — ranking sub-pipeline
 
@@ -330,8 +421,8 @@ deep dives instead of duplicating further here.
    `ranking_feature_schema.json`, `ranking_scoring_policy.json` are cached to avoid repeat LLM
    cost — except fallback feature schemas are deliberately never persisted.
 4. **Two independent provider-selection axes**: `search.provider` (exa/peopledatalabs/apollo) for
-   candidate sourcing vs. `llm_provider.choose_provider()` (claude/copilot) for LLM calls — unrelated
-   to each other, don't conflate when debugging.
+   candidate sourcing vs. `llm_provider.choose_provider()` (claude/copilot/codex) for LLM calls —
+   unrelated to each other, don't conflate when debugging.
 5. **Deployment-specific hard-coded paths**: `CLAUDE_PROFILES_DIR` (Linux server path) and the
    Copilot CLI macOS fallback path in `llm_client.py` are environment-specific; they degrade
    gracefully if absent but are not portable.

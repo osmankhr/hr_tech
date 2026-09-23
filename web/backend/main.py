@@ -15,7 +15,7 @@ import subprocess
 import threading
 import time
 import yaml
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from auth_utils import (
     hash_password,
@@ -34,6 +34,7 @@ CANDIDATE_POOL_CAMPAIGNS_DIR = CANDIDATE_POOL_ROOT / "campaigns"
 UPLOAD_DIR = BACKEND_DIR / "uploaded_cvs"
 FRONTEND_DIST = BACKEND_DIR.parent / "frontend" / "dist"
 MAX_WORKERS_CAP = 20
+STALE_RUN_TIMEOUT_MINUTES = 180
 
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -152,6 +153,20 @@ def _get_owned_campaign(conn, campaign_id, current_user):
 
 def ensure_pipeline_tables():
     conn = get_connection()
+    core_tables = {
+        row[0]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )
+    }
+    if "campaigns" not in core_tables or "candidates" not in core_tables:
+        conn.close()
+        raise RuntimeError(
+            f"Core schema missing in {DB_PATH}. Run "
+            "`python create_sample_hr_db.py` then `python migrate_auth_audit.py` "
+            "before starting the server."
+        )
+
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS pipeline_campaign_configs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -215,9 +230,37 @@ def ensure_pipeline_tables():
             FOREIGN KEY (created_by_user_id) REFERENCES users(id) ON DELETE SET NULL
         );
 
+        -- One row per edit of a campaign's pipeline config. Unlike
+        -- pipeline_campaign_configs (which holds only paths, one row per campaign, and now acts
+        -- as the "which version is current" pointer), this keeps the config *content* so the
+        -- editor can round-trip it without re-parsing campaign.yaml, and so each version keeps
+        -- its own pipeline_dir -- which is what lets every run's candidate list survive an edit.
+        CREATE TABLE IF NOT EXISTS pipeline_config_versions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            campaign_id INTEGER NOT NULL,
+            version_number INTEGER NOT NULL,
+            is_current INTEGER NOT NULL DEFAULT 1,
+            pipeline_name TEXT NOT NULL,
+            pipeline_description TEXT,
+            locations_json TEXT NOT NULL,
+            job_description TEXT NOT NULL,
+            filter_criteria TEXT NOT NULL,
+            pipeline_dir TEXT NOT NULL,
+            campaign_yaml_path TEXT NOT NULL,
+            job_description_path TEXT NOT NULL,
+            filter_criteria_path TEXT NOT NULL,
+            created_by_user_id INTEGER,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE (campaign_id, version_number),
+            FOREIGN KEY (campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE,
+            FOREIGN KEY (created_by_user_id) REFERENCES users(id) ON DELETE SET NULL
+        );
+
         CREATE INDEX IF NOT EXISTS idx_pipeline_runs_campaign ON pipeline_runs(campaign_id, started_at DESC);
         CREATE INDEX IF NOT EXISTS idx_candidate_rankings_campaign ON candidate_rankings(campaign_id, rank ASC);
         CREATE INDEX IF NOT EXISTS idx_pipeline_campaign_templates_owner ON pipeline_campaign_templates(created_by_user_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_pipeline_config_versions_campaign ON pipeline_config_versions(campaign_id, version_number DESC);
     """)
 
     # Backward-compatible columns for run summary metrics.
@@ -226,11 +269,17 @@ def ensure_pipeline_tables():
         "ALTER TABLE pipeline_runs ADD COLUMN ranked_candidates INTEGER",
         "ALTER TABLE candidates ADD COLUMN english_confidence TEXT",
         "ALTER TABLE candidates ADD COLUMN english_confidence_reason TEXT",
+        # 0 = "belongs to no known config version" (pre-versioning rows). Not NULL, because
+        # SQLite treats NULLs as distinct in UNIQUE constraints, which would let the same
+        # candidate be inserted repeatedly for the same campaign.
+        "ALTER TABLE pipeline_runs ADD COLUMN config_version_id INTEGER NOT NULL DEFAULT 0",
     ]:
         try:
             conn.execute(alter_sql)
         except sqlite3.OperationalError:
             pass
+
+    _migrate_candidate_rankings_to_versioned(conn)
 
     # candidate_profile_summary is a VIEW with a fixed column list baked in at CREATE time —
     # unlike a table, it doesn't pick up new candidates columns automatically, so it has to be
@@ -270,7 +319,124 @@ def ensure_pipeline_tables():
     """)
 
     conn.commit()
+
+    _backfill_config_versions(conn)
+
+    conn.commit()
     conn.close()
+
+
+def _migrate_candidate_rankings_to_versioned(conn):
+    """Re-key candidate_rankings from (campaign_id, candidate_id) to include config_version_id.
+
+    The original UNIQUE(campaign_id, candidate_id) meant a second run of the same campaign
+    overwrote the first run's scores, so only the newest config's results ever existed.
+    SQLite can't alter a table-level UNIQUE constraint in place, hence the rebuild. Guarded by
+    a column check so it runs exactly once.
+    """
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(candidate_rankings)")}
+    if not columns or "config_version_id" in columns:
+        return
+
+    logger.info("Migrating candidate_rankings to be config-version scoped")
+
+    # executescript() commits any open transaction first, so the DDL below runs outside one.
+    conn.executescript("""
+        CREATE TABLE candidate_rankings_versioned (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            campaign_id INTEGER NOT NULL,
+            config_version_id INTEGER NOT NULL DEFAULT 0,
+            candidate_id INTEGER NOT NULL,
+            manual_score REAL,
+            category TEXT,
+            rank INTEGER,
+            feature_contributions_json TEXT,
+            gate_penalty REAL,
+            ai_adjustment REAL,
+            raw_agent_json TEXT,
+            raw_manual_json TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE (campaign_id, config_version_id, candidate_id),
+            FOREIGN KEY (campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE,
+            FOREIGN KEY (candidate_id) REFERENCES candidates(id) ON DELETE CASCADE
+        );
+
+        INSERT INTO candidate_rankings_versioned (
+            campaign_id, config_version_id, candidate_id, manual_score, category, rank,
+            feature_contributions_json, gate_penalty, ai_adjustment, raw_agent_json,
+            raw_manual_json, created_at, updated_at
+        )
+        SELECT
+            campaign_id, 0, candidate_id, manual_score, category, rank,
+            feature_contributions_json, gate_penalty, ai_adjustment, raw_agent_json,
+            raw_manual_json, created_at, updated_at
+        FROM candidate_rankings;
+
+        DROP TABLE candidate_rankings;
+        ALTER TABLE candidate_rankings_versioned RENAME TO candidate_rankings;
+
+        CREATE INDEX IF NOT EXISTS idx_candidate_rankings_campaign
+            ON candidate_rankings(campaign_id, rank ASC);
+        CREATE INDEX IF NOT EXISTS idx_candidate_rankings_version
+            ON candidate_rankings(campaign_id, config_version_id, rank ASC);
+    """)
+
+
+def _backfill_config_versions(conn):
+    """Give every pre-versioning campaign a version 1 row, and attach its existing runs/results.
+
+    Config content wasn't stored in the DB before, so it's recovered from the files the pipeline
+    actually runs against (campaign.yaml + input/*.md). A campaign whose folder is gone still
+    gets a row, just with empty content, so the editor has something to open.
+    """
+    rows = conn.execute("""
+        SELECT c.campaign_id, c.pipeline_dir, c.campaign_yaml_path,
+               c.job_description_path, c.filter_criteria_path, c.created_at
+        FROM pipeline_campaign_configs c
+        LEFT JOIN pipeline_config_versions v ON v.campaign_id = c.campaign_id
+        WHERE v.id IS NULL
+    """).fetchall()
+
+    for row in rows:
+        recovered = _read_config_from_disk(Path(row["pipeline_dir"]))
+        campaign = conn.execute(
+            "SELECT campaign_name, created_by_user_id FROM campaigns WHERE id = ?",
+            (row["campaign_id"],),
+        ).fetchone()
+
+        version_id = conn.execute("""
+            INSERT INTO pipeline_config_versions (
+                campaign_id, version_number, is_current, pipeline_name, pipeline_description,
+                locations_json, job_description, filter_criteria, pipeline_dir,
+                campaign_yaml_path, job_description_path, filter_criteria_path,
+                created_by_user_id, created_at, updated_at
+            )
+            VALUES (?, 1, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            row["campaign_id"],
+            recovered["pipeline_name"] or (campaign["campaign_name"] if campaign else "Campaign"),
+            recovered["pipeline_description"],
+            json.dumps(recovered["locations"], ensure_ascii=False),
+            recovered["job_description"],
+            recovered["filter_criteria"],
+            row["pipeline_dir"],
+            row["campaign_yaml_path"],
+            row["job_description_path"],
+            row["filter_criteria_path"],
+            campaign["created_by_user_id"] if campaign else None,
+            row["created_at"],
+            utc_now(),
+        )).lastrowid
+
+        conn.execute(
+            "UPDATE pipeline_runs SET config_version_id = ? WHERE campaign_id = ? AND config_version_id = 0",
+            (version_id, row["campaign_id"]),
+        )
+        conn.execute(
+            "UPDATE candidate_rankings SET config_version_id = ? WHERE campaign_id = ? AND config_version_id = 0",
+            (version_id, row["campaign_id"]),
+        )
 
 
 @app.on_event("startup")
@@ -281,6 +447,10 @@ def on_startup():
 def _slugify(value: str):
     slug = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
     return slug or "campaign"
+
+
+LOCATION_CLAUSE_HEADING = "## Location Requirement (hard filter)"
+LOCATION_CLAUSE_TAIL = "pending for manual review rather than accepting."
 
 
 def _build_location_filter_clause(locations):
@@ -368,6 +538,303 @@ def _build_campaign_yaml(name: str, description: str, locations, max_candidates:
     ])
 
     return "\n".join(lines)
+
+
+def _strip_location_clause(criteria_text: str) -> str:
+    """Return just the recruiter-authored part of a filter_criteria.md file.
+
+    What's written to disk is _build_location_filter_clause() + what the recruiter typed. Feeding
+    the raw file back into the editor would both show them a block they never wrote and, on the
+    next save, prepend a second copy of it.
+    """
+    if not criteria_text:
+        return ""
+
+    text = criteria_text.lstrip()
+    if not text.startswith(LOCATION_CLAUSE_HEADING):
+        return criteria_text
+
+    tail_index = text.find(LOCATION_CLAUSE_TAIL)
+    if tail_index == -1:
+        return criteria_text
+
+    return text[tail_index + len(LOCATION_CLAUSE_TAIL):].lstrip("\n")
+
+
+def _read_config_from_disk(pipeline_dir: Path) -> dict:
+    """Recover editable config content from a pipeline folder.
+
+    Used to backfill campaigns created before config content was persisted in the DB. Every
+    field degrades to empty rather than raising — a half-readable folder still needs to open
+    in the editor.
+    """
+    recovered = {
+        "pipeline_name": "",
+        "pipeline_description": "",
+        "locations": [],
+        "job_description": "",
+        "filter_criteria": "",
+    }
+
+    if not pipeline_dir or not pipeline_dir.exists():
+        return recovered
+
+    try:
+        parsed = yaml.safe_load((pipeline_dir / "campaign.yaml").read_text(encoding="utf-8")) or {}
+        if isinstance(parsed, dict):
+            recovered["pipeline_name"] = str(parsed.get("name") or "")
+            recovered["pipeline_description"] = str(parsed.get("description") or "")
+            locations = parsed.get("locations")
+            if isinstance(locations, list):
+                recovered["locations"] = [
+                    {
+                        "name": str(loc.get("name") or "").strip(),
+                        "hint": str(loc.get("hint") or "").strip(),
+                    }
+                    for loc in locations
+                    if isinstance(loc, dict) and str(loc.get("name") or "").strip()
+                ]
+    except Exception:
+        logger.warning("Could not recover campaign.yaml from %s", pipeline_dir)
+
+    try:
+        recovered["job_description"] = (
+            pipeline_dir / "input" / "job_description.md"
+        ).read_text(encoding="utf-8")
+    except Exception:
+        pass
+
+    try:
+        recovered["filter_criteria"] = _strip_location_clause(
+            (pipeline_dir / "input" / "filter_criteria.md").read_text(encoding="utf-8")
+        )
+    except Exception:
+        pass
+
+    return recovered
+
+
+def _write_pipeline_config_files(
+    *,
+    campaign_dir: Path,
+    pipeline_name: str,
+    pipeline_description: str,
+    locations,
+    job_description: str,
+    filter_criteria: str,
+    max_candidates: int,
+):
+    """Create/refresh the candidate_pool folder layout and config files for one config version.
+
+    Returns the three paths that pipeline_campaign_configs / pipeline_config_versions record.
+    """
+    input_dir = campaign_dir / "input"
+    campaign_dir.mkdir(parents=True, exist_ok=True)
+    input_dir.mkdir(parents=True, exist_ok=True)
+    (campaign_dir / "data").mkdir(parents=True, exist_ok=True)
+    (campaign_dir / "output").mkdir(parents=True, exist_ok=True)
+    (campaign_dir / "logs").mkdir(parents=True, exist_ok=True)
+
+    campaign_yaml_path = campaign_dir / "campaign.yaml"
+    job_description_path = input_dir / "job_description.md"
+    filter_criteria_path = input_dir / "filter_criteria.md"
+
+    campaign_yaml_path.write_text(
+        _build_campaign_yaml(
+            pipeline_name, pipeline_description, locations, max_candidates=max_candidates
+        ),
+        encoding="utf-8",
+    )
+    job_description_path.write_text(job_description, encoding="utf-8")
+
+    location_clause = _build_location_filter_clause(locations)
+    filter_criteria_path.write_text(
+        f"{location_clause}\n{filter_criteria}" if location_clause else filter_criteria,
+        encoding="utf-8",
+    )
+
+    return campaign_yaml_path, job_description_path, filter_criteria_path
+
+
+# Artifacts the pipeline caches to avoid repeat LLM cost. They're derived from the job
+# description / filter criteria / locations, so an in-place config edit makes them stale and a
+# rerun would silently reuse queries and scoring features built from the *old* config.
+STALE_ON_CONFIG_EDIT = (
+    "generated_queries.yaml",
+    "ranking_feature_schema.json",
+    "ranking_scoring_policy.json",
+)
+
+
+def _clear_config_derived_cache(pipeline_dir: Path):
+    for filename in STALE_ON_CONFIG_EDIT:
+        try:
+            (pipeline_dir / "data" / filename).unlink(missing_ok=True)
+        except OSError:
+            logger.warning("Could not clear cached %s in %s", filename, pipeline_dir)
+
+
+def _mark_stale_running_runs(conn):
+    """Fail runs whose worker thread is gone.
+
+    Runs execute in a daemon thread, so a server restart (or a systemd reload) leaves the row
+    stuck at 'Running' forever — which permanently blocks both starting a new run and editing
+    the config, since both refuse to proceed while one is in progress.
+    """
+    cutoff = (
+        datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=STALE_RUN_TIMEOUT_MINUTES)
+    ).isoformat(timespec="seconds")
+
+    conn.execute("""
+        UPDATE pipeline_runs
+        SET status = 'Failed',
+            completed_at = ?,
+            error_message = COALESCE(error_message, 'Run abandoned — no result recorded before timeout')
+        WHERE status = 'Running' AND started_at < ?
+    """, (utc_now(), cutoff))
+    conn.commit()
+
+
+def _parse_locations_payload(locations_json: str) -> list:
+    try:
+        parsed = json.loads(locations_json)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="locations_json must be valid JSON")
+
+    if not isinstance(parsed, list) or len(parsed) == 0:
+        raise HTTPException(status_code=400, detail="locations_json must be a non-empty JSON array")
+
+    cleaned = []
+    for item in parsed:
+        if not isinstance(item, dict):
+            raise HTTPException(status_code=400, detail="Each location must be an object with name and hint")
+        name = str(item.get("name", "")).strip()
+        hint = str(item.get("hint", "")).strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="Each location must include a non-empty name")
+        cleaned.append({"name": name, "hint": hint})
+    return cleaned
+
+
+def _new_version_dir(pipeline_name: str, version_number: int) -> Path:
+    """Each config version gets its own candidate_pool folder.
+
+    That separation is what preserves earlier runs: the pipeline writes every artifact
+    (raw_results/filtered_results/ranked_results) relative to its campaign dir, so pointing a
+    new version at a new folder leaves the previous version's results untouched instead of
+    overwriting them in place.
+    """
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    return CANDIDATE_POOL_CAMPAIGNS_DIR / f"{_slugify(pipeline_name)}_v{version_number}_{stamp}"
+
+
+def _point_current_config_at(conn, campaign_id: int, version_row, now: str):
+    """Repoint pipeline_campaign_configs at a version's folder.
+
+    pipeline_campaign_configs stays the single "current version" pointer that every existing
+    route (run, exports, scoring-explainer, usage-summary) already reads, so switching versions
+    doesn't require touching any of them.
+    """
+    conn.execute("""
+        UPDATE pipeline_campaign_configs
+        SET pipeline_dir = ?,
+            campaign_yaml_path = ?,
+            job_description_path = ?,
+            filter_criteria_path = ?,
+            updated_at = ?
+        WHERE campaign_id = ?
+    """, (
+        version_row["pipeline_dir"],
+        version_row["campaign_yaml_path"],
+        version_row["job_description_path"],
+        version_row["filter_criteria_path"],
+        now,
+        campaign_id,
+    ))
+
+
+def _replace_current_version_paths(
+    conn,
+    *,
+    campaign_id: int,
+    pipeline_name: str,
+    pipeline_description: str,
+    locations,
+    job_description: str,
+    filter_criteria: str,
+    campaign_dir: Path,
+    campaign_yaml_path: Path,
+    job_description_path: Path,
+    filter_criteria_path: Path,
+    now: str,
+):
+    """Overwrite the current version's content and folder (used when setup re-runs)."""
+    current = conn.execute("""
+        SELECT id, version_number
+        FROM pipeline_config_versions
+        WHERE campaign_id = ?
+        ORDER BY is_current DESC, version_number DESC
+        LIMIT 1
+    """, (campaign_id,)).fetchone()
+
+    conn.execute("""
+        UPDATE pipeline_config_versions
+        SET pipeline_name = ?, pipeline_description = ?, locations_json = ?,
+            job_description = ?, filter_criteria = ?, pipeline_dir = ?,
+            campaign_yaml_path = ?, job_description_path = ?, filter_criteria_path = ?,
+            updated_at = ?
+        WHERE id = ?
+    """, (
+        pipeline_name,
+        pipeline_description,
+        json.dumps(locations, ensure_ascii=False),
+        job_description,
+        filter_criteria,
+        str(campaign_dir),
+        str(campaign_yaml_path),
+        str(job_description_path),
+        str(filter_criteria_path),
+        now,
+        current["id"],
+    ))
+
+    return current["id"], current["version_number"]
+
+
+def _get_config_version(conn, campaign_id: int, version_id: Optional[int] = None):
+    """Fetch one config version row — a specific one by id, or the campaign's current one."""
+    if version_id is not None:
+        return conn.execute(
+            "SELECT * FROM pipeline_config_versions WHERE id = ? AND campaign_id = ?",
+            (version_id, campaign_id),
+        ).fetchone()
+
+    return conn.execute("""
+        SELECT *
+        FROM pipeline_config_versions
+        WHERE campaign_id = ?
+        ORDER BY is_current DESC, version_number DESC
+        LIMIT 1
+    """, (campaign_id,)).fetchone()
+
+
+def _config_version_has_results(conn, version_row) -> bool:
+    """Whether a version has produced candidate results worth preserving.
+
+    Drives the edit-in-place vs. new-version decision: overwriting a config that nobody has run
+    yet loses nothing, but overwriting one with results would strand the candidate list the
+    recruiter is looking at.
+    """
+    imported = conn.execute(
+        "SELECT 1 FROM candidate_rankings WHERE campaign_id = ? AND config_version_id = ? LIMIT 1",
+        (version_row["campaign_id"], version_row["id"]),
+    ).fetchone()
+    if imported:
+        return True
+
+    # Ranked output on disk counts too — the pipeline may have finished without the UI having
+    # imported it yet (auto-import is driven by an SSE event the browser can miss).
+    return (Path(version_row["pipeline_dir"]) / "data" / "ranked_results.json").exists()
 
 
 def _extract_years_experience(text: str):
@@ -644,57 +1111,26 @@ def setup_pipeline_campaign(
     sample_cv_filename = campaign_extra["sample_cv_filename"] if campaign_extra else None
 
     try:
-        parsed_locations = json.loads(locations_json)
-    except json.JSONDecodeError:
+        cleaned_locations = _parse_locations_payload(locations_json)
+    except HTTPException:
         conn.close()
-        raise HTTPException(status_code=400, detail="locations_json must be valid JSON")
+        raise
 
-    if not isinstance(parsed_locations, list) or len(parsed_locations) == 0:
-        conn.close()
-        raise HTTPException(status_code=400, detail="locations_json must be a non-empty JSON array")
-
-    cleaned_locations = []
-    for item in parsed_locations:
-        if not isinstance(item, dict):
-            conn.close()
-            raise HTTPException(status_code=400, detail="Each location must be an object with name and hint")
-        name = str(item.get("name", "")).strip()
-        hint = str(item.get("hint", "")).strip()
-        if not name:
-            conn.close()
-            raise HTTPException(status_code=400, detail="Each location must include a non-empty name")
-        cleaned_locations.append({"name": name, "hint": hint})
-
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    folder_name = f"{_slugify(pipeline_name)}_{stamp}"
-    campaign_dir = CANDIDATE_POOL_CAMPAIGNS_DIR / folder_name
-    input_dir = campaign_dir / "input"
+    campaign_dir = _new_version_dir(pipeline_name, 1)
 
     if campaign_dir.exists():
         conn.close()
         raise HTTPException(status_code=409, detail="Pipeline campaign directory already exists")
 
-    campaign_dir.mkdir(parents=True, exist_ok=False)
-    input_dir.mkdir(parents=True, exist_ok=True)
-    (campaign_dir / "data").mkdir(parents=True, exist_ok=True)
-    (campaign_dir / "output").mkdir(parents=True, exist_ok=True)
-    (campaign_dir / "logs").mkdir(parents=True, exist_ok=True)
-
-    campaign_yaml_path = campaign_dir / "campaign.yaml"
-    job_description_path = input_dir / "job_description.md"
-    filter_criteria_path = input_dir / "filter_criteria.md"
-
-    campaign_yaml_path.write_text(
-        _build_campaign_yaml(pipeline_name, pipeline_description, cleaned_locations, max_candidates=target_profiles),
-        encoding="utf-8",
+    campaign_yaml_path, job_description_path, filter_criteria_path = _write_pipeline_config_files(
+        campaign_dir=campaign_dir,
+        pipeline_name=pipeline_name,
+        pipeline_description=pipeline_description,
+        locations=cleaned_locations,
+        job_description=job_description,
+        filter_criteria=filter_criteria,
+        max_candidates=target_profiles,
     )
-    job_description_path.write_text(job_description, encoding="utf-8")
-
-    location_clause = _build_location_filter_clause(cleaned_locations)
-    full_filter_criteria = (
-        f"{location_clause}\n{filter_criteria}" if location_clause else filter_criteria
-    )
-    filter_criteria_path.write_text(full_filter_criteria, encoding="utf-8")
 
     # Sample CV (if uploaded on the campaign) never reached the search pipeline before —
     # generate_queries.py only reads PDFs from input/seed_cvs/, but the upload endpoint only
@@ -703,7 +1139,7 @@ def setup_pipeline_campaign(
     if sample_cv_filename:
         source_cv_path = UPLOAD_DIR / sample_cv_filename
         if source_cv_path.exists():
-            seed_cv_dir = input_dir / "seed_cvs"
+            seed_cv_dir = campaign_dir / "input" / "seed_cvs"
             seed_cv_dir.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(source_cv_path, seed_cv_dir / source_cv_path.name)
 
@@ -736,6 +1172,54 @@ def setup_pipeline_campaign(
         now,
     ))
 
+    # Re-running setup for a campaign that already has versions would orphan them, so the
+    # first version is only seeded when there isn't one yet.
+    existing_version = conn.execute(
+        "SELECT id FROM pipeline_config_versions WHERE campaign_id = ? LIMIT 1",
+        (campaign_id,),
+    ).fetchone()
+
+    if existing_version:
+        version_id, version_number = _replace_current_version_paths(
+            conn,
+            campaign_id=campaign_id,
+            pipeline_name=pipeline_name,
+            pipeline_description=pipeline_description,
+            locations=cleaned_locations,
+            job_description=job_description,
+            filter_criteria=filter_criteria,
+            campaign_dir=campaign_dir,
+            campaign_yaml_path=campaign_yaml_path,
+            job_description_path=job_description_path,
+            filter_criteria_path=filter_criteria_path,
+            now=now,
+        )
+    else:
+        version_id = conn.execute("""
+            INSERT INTO pipeline_config_versions (
+                campaign_id, version_number, is_current, pipeline_name, pipeline_description,
+                locations_json, job_description, filter_criteria, pipeline_dir,
+                campaign_yaml_path, job_description_path, filter_criteria_path,
+                created_by_user_id, created_at, updated_at
+            )
+            VALUES (?, 1, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            campaign_id,
+            pipeline_name,
+            pipeline_description,
+            json.dumps(cleaned_locations, ensure_ascii=False),
+            job_description,
+            filter_criteria,
+            str(campaign_dir),
+            str(campaign_yaml_path),
+            str(job_description_path),
+            str(filter_criteria_path),
+            current_user["id"],
+            now,
+            now,
+        )).lastrowid
+        version_number = 1
+
     conn.commit()
     conn.close()
 
@@ -746,28 +1230,9 @@ def setup_pipeline_campaign(
         "campaign_yaml_path": str(campaign_yaml_path),
         "job_description_path": str(job_description_path),
         "filter_criteria_path": str(filter_criteria_path),
+        "config_version_id": version_id,
+        "version_number": version_number,
     }
-
-
-def _parse_template_locations(locations_json: str) -> list:
-    try:
-        parsed = json.loads(locations_json)
-    except json.JSONDecodeError:
-        raise HTTPException(status_code=400, detail="locations_json must be valid JSON")
-
-    if not isinstance(parsed, list) or len(parsed) == 0:
-        raise HTTPException(status_code=400, detail="locations_json must be a non-empty JSON array")
-
-    cleaned = []
-    for item in parsed:
-        if not isinstance(item, dict):
-            raise HTTPException(status_code=400, detail="Each location must be an object with name and hint")
-        name = str(item.get("name", "")).strip()
-        hint = str(item.get("hint", "")).strip()
-        if not name:
-            raise HTTPException(status_code=400, detail="Each location must include a non-empty name")
-        cleaned.append({"name": name, "hint": hint})
-    return cleaned
 
 
 @app.post("/api/campaign-templates")
@@ -788,7 +1253,7 @@ def create_campaign_template(
     if not template_name.strip():
         raise HTTPException(status_code=400, detail="Config name is required")
 
-    cleaned_locations = _parse_template_locations(locations_json)
+    cleaned_locations = _parse_locations_payload(locations_json)
 
     conn = get_connection()
 
@@ -870,8 +1335,13 @@ def list_campaign_templates(current_user=Depends(get_current_user)):
     return results
 
 
-@app.get("/api/campaigns/{campaign_id}/pipeline/runs")
-def list_pipeline_runs(campaign_id: int, current_user=Depends(get_current_user)):
+@app.get("/api/campaigns/{campaign_id}/pipeline/config-versions")
+def list_config_versions(campaign_id: int, current_user=Depends(get_current_user)):
+    """Every saved config for this campaign, newest first, with that version's result counts.
+
+    Each version is a separate candidate list: selecting one in the UI shows the candidates that
+    version's run produced, so earlier runs stay browsable after a config edit.
+    """
     conn = get_connection()
 
     if not _get_owned_campaign(conn, campaign_id, current_user):
@@ -880,25 +1350,304 @@ def list_pipeline_runs(campaign_id: int, current_user=Depends(get_current_user))
 
     rows = conn.execute("""
         SELECT
-            id,
+            v.*,
+            (
+                SELECT COUNT(*)
+                FROM candidate_rankings cr
+                WHERE cr.campaign_id = v.campaign_id AND cr.config_version_id = v.id
+            ) AS imported_candidates,
+            (
+                SELECT COUNT(*)
+                FROM pipeline_runs r
+                WHERE r.campaign_id = v.campaign_id AND r.config_version_id = v.id
+            ) AS run_count,
+            (
+                SELECT r.accepted_candidates
+                FROM pipeline_runs r
+                WHERE r.campaign_id = v.campaign_id
+                  AND r.config_version_id = v.id
+                  AND r.accepted_candidates IS NOT NULL
+                ORDER BY r.started_at DESC
+                LIMIT 1
+            ) AS accepted_candidates,
+            (
+                SELECT r.ranked_candidates
+                FROM pipeline_runs r
+                WHERE r.campaign_id = v.campaign_id
+                  AND r.config_version_id = v.id
+                  AND r.ranked_candidates IS NOT NULL
+                ORDER BY r.started_at DESC
+                LIMIT 1
+            ) AS ranked_candidates
+        FROM pipeline_config_versions v
+        WHERE v.campaign_id = ?
+        ORDER BY v.version_number DESC
+    """, (campaign_id,)).fetchall()
+
+    results = []
+    for row in rows:
+        item = dict(row)
+        try:
+            item["locations"] = json.loads(item.pop("locations_json") or "[]")
+        except json.JSONDecodeError:
+            item["locations"] = []
+
+        item["is_current"] = bool(item["is_current"])
+        item["has_results"] = bool(item["imported_candidates"]) or (
+            Path(item["pipeline_dir"]) / "data" / "ranked_results.json"
+        ).exists()
+        results.append(item)
+
+    conn.close()
+    return results
+
+
+@app.put("/api/campaigns/{campaign_id}/pipeline/config")
+def update_pipeline_config(
+    campaign_id: int,
+    pipeline_name: str = Form(...),
+    pipeline_description: str = Form(""),
+    locations_json: str = Form(...),
+    job_description: str = Form(...),
+    filter_criteria: str = Form(...),
+    current_user=Depends(get_current_user),
+):
+    """Edit a campaign's pipeline config.
+
+    If the current version has already produced results, this creates the *next* version in a
+    fresh folder and leaves the old one intact, so the recruiter keeps one candidate list per
+    config they've run. If it hasn't been run yet there's nothing to preserve, so it's updated
+    in place (and its config-derived caches are dropped so a rerun doesn't reuse queries and
+    scoring features designed from the superseded text).
+    """
+    if not pipeline_name.strip():
+        raise HTTPException(status_code=400, detail="Campaign name is required")
+    if not job_description.strip() or not filter_criteria.strip():
+        raise HTTPException(status_code=400, detail="Job description and filter criteria are required")
+
+    cleaned_locations = _parse_locations_payload(locations_json)
+
+    conn = get_connection()
+
+    if not _get_owned_campaign(conn, campaign_id, current_user):
+        conn.close()
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    current_version = _get_config_version(conn, campaign_id)
+    if not current_version:
+        conn.close()
+        raise HTTPException(
+            status_code=400,
+            detail="No pipeline config found for this campaign. Save config first.",
+        )
+
+    _mark_stale_running_runs(conn)
+
+    running = conn.execute("""
+        SELECT id FROM pipeline_runs
+        WHERE campaign_id = ? AND status = 'Running'
+        LIMIT 1
+    """, (campaign_id,)).fetchone()
+
+    if running:
+        conn.close()
+        raise HTTPException(
+            status_code=409,
+            detail="A pipeline run is in progress. Wait for it to finish before editing the config.",
+        )
+
+    target_profiles = conn.execute(
+        "SELECT target_profiles FROM campaigns WHERE id = ?",
+        (campaign_id,),
+    ).fetchone()
+    max_candidates = (target_profiles["target_profiles"] if target_profiles else None) or 40
+
+    create_new_version = _config_version_has_results(conn, current_version)
+    now = utc_now()
+    pipeline_name = pipeline_name.strip()
+    pipeline_description = pipeline_description.strip()
+
+    if create_new_version:
+        next_number = int(conn.execute(
+            "SELECT COALESCE(MAX(version_number), 0) + 1 AS next FROM pipeline_config_versions WHERE campaign_id = ?",
+            (campaign_id,),
+        ).fetchone()["next"])
+
+        version_dir = _new_version_dir(pipeline_name, next_number)
+        if version_dir.exists():
+            conn.close()
+            raise HTTPException(status_code=409, detail="Pipeline campaign directory already exists")
+    else:
+        next_number = int(current_version["version_number"])
+        version_dir = Path(current_version["pipeline_dir"])
+
+    try:
+        yaml_path, jd_path, criteria_path = _write_pipeline_config_files(
+            campaign_dir=version_dir,
+            pipeline_name=pipeline_name,
+            pipeline_description=pipeline_description,
+            locations=cleaned_locations,
+            job_description=job_description,
+            filter_criteria=filter_criteria,
+            max_candidates=int(max_candidates),
+        )
+    except OSError as exc:
+        conn.close()
+        raise HTTPException(status_code=500, detail=f"Could not write config files: {exc}")
+
+    if create_new_version:
+        # Seed CVs feed query generation, so a new version inherits them rather than silently
+        # losing the sample CV the recruiter uploaded with the campaign.
+        previous_seed_cvs = Path(current_version["pipeline_dir"]) / "input" / "seed_cvs"
+        if previous_seed_cvs.is_dir():
+            shutil.copytree(previous_seed_cvs, version_dir / "input" / "seed_cvs", dirs_exist_ok=True)
+
+        conn.execute(
+            "UPDATE pipeline_config_versions SET is_current = 0, updated_at = ? WHERE campaign_id = ?",
+            (now, campaign_id),
+        )
+        version_id = conn.execute("""
+            INSERT INTO pipeline_config_versions (
+                campaign_id, version_number, is_current, pipeline_name, pipeline_description,
+                locations_json, job_description, filter_criteria, pipeline_dir,
+                campaign_yaml_path, job_description_path, filter_criteria_path,
+                created_by_user_id, created_at, updated_at
+            )
+            VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
             campaign_id,
-            run_type,
-            status,
-            command,
-            campaign_dir,
-            artifact_path,
-            error_message,
-            started_at,
-            completed_at,
-            accepted_candidates,
-            ranked_candidates
-        FROM pipeline_runs
-        WHERE campaign_id = ?
-        ORDER BY started_at DESC
+            next_number,
+            pipeline_name,
+            pipeline_description,
+            json.dumps(cleaned_locations, ensure_ascii=False),
+            job_description,
+            filter_criteria,
+            str(version_dir),
+            str(yaml_path),
+            str(jd_path),
+            str(criteria_path),
+            current_user["id"],
+            now,
+            now,
+        )).lastrowid
+    else:
+        _clear_config_derived_cache(version_dir)
+        conn.execute("""
+            UPDATE pipeline_config_versions
+            SET pipeline_name = ?, pipeline_description = ?, locations_json = ?,
+                job_description = ?, filter_criteria = ?, updated_at = ?
+            WHERE id = ?
+        """, (
+            pipeline_name,
+            pipeline_description,
+            json.dumps(cleaned_locations, ensure_ascii=False),
+            job_description,
+            filter_criteria,
+            now,
+            current_version["id"],
+        ))
+        version_id = current_version["id"]
+
+    version_row = conn.execute(
+        "SELECT * FROM pipeline_config_versions WHERE id = ?",
+        (version_id,),
+    ).fetchone()
+    _point_current_config_at(conn, campaign_id, version_row, now)
+
+    conn.execute("""
+        UPDATE campaigns
+        SET campaign_name = ?, position_name = ?, location = ?,
+            updated_by_user_id = ?, updated_at = ?
+        WHERE id = ?
+    """, (
+        pipeline_name,
+        pipeline_name,
+        ", ".join(loc["name"] for loc in cleaned_locations),
+        current_user["id"],
+        now,
+        campaign_id,
+    ))
+
+    description = (
+        f"Pipeline config saved as version {next_number}"
+        if create_new_version
+        else f"Pipeline config version {next_number} updated in place"
+    )
+    conn.execute("""
+        INSERT INTO audit_events (entity_type, entity_id, action, description, user_id, created_at)
+        VALUES ('campaign', ?, 'Updated Config', ?, ?, ?)
+    """, (campaign_id, description, current_user["id"], now))
+
+    conn.commit()
+    conn.close()
+
+    return {
+        "success": True,
+        "campaign_id": campaign_id,
+        "config_version_id": version_id,
+        "version_number": next_number,
+        "new_version_created": create_new_version,
+        "pipeline_dir": str(version_dir),
+    }
+
+
+@app.get("/api/campaigns/{campaign_id}/pipeline/runs")
+def list_pipeline_runs(campaign_id: int, current_user=Depends(get_current_user)):
+    conn = get_connection()
+
+    if not _get_owned_campaign(conn, campaign_id, current_user):
+        conn.close()
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    _mark_stale_running_runs(conn)
+
+    rows = conn.execute("""
+        SELECT
+            r.id,
+            r.campaign_id,
+            r.run_type,
+            r.status,
+            r.command,
+            r.campaign_dir,
+            r.artifact_path,
+            r.error_message,
+            r.started_at,
+            r.completed_at,
+            r.accepted_candidates,
+            r.ranked_candidates,
+            r.config_version_id,
+            v.version_number AS config_version_number
+        FROM pipeline_runs r
+        LEFT JOIN pipeline_config_versions v ON v.id = r.config_version_id
+        WHERE r.campaign_id = ?
+        ORDER BY r.started_at DESC
     """, (campaign_id,)).fetchall()
     conn.close()
 
     return [dict(row) for row in rows]
+
+
+def _read_pipeline_progress(campaign_dir: Optional[str]) -> Optional[dict]:
+    """Read the phase a running subprocess is currently in.
+
+    `run_campaign.py` runs as an opaque subprocess, so this file is the only way to tell the
+    recruiter whether we're still searching or already ranking. Absent/partial/garbage file
+    just means "no phase info" -- it must never interrupt the event stream.
+    """
+    if not campaign_dir:
+        return None
+
+    try:
+        status_path = Path(campaign_dir) / "data" / "pipeline_status.json"
+        if not status_path.exists():
+            return None
+        payload = json.loads(status_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+    if not isinstance(payload, dict) or not payload.get("phase"):
+        return None
+    return payload
 
 
 @app.get("/api/campaigns/{campaign_id}/pipeline/events")
@@ -931,21 +1680,24 @@ def stream_pipeline_events(
             row = conn.execute(
                 """
                 SELECT
-                    id,
-                    campaign_id,
-                    run_type,
-                    status,
-                    command,
-                    campaign_dir,
-                    artifact_path,
-                    error_message,
-                    started_at,
-                    completed_at,
-                    accepted_candidates,
-                    ranked_candidates
-                FROM pipeline_runs
-                WHERE campaign_id = ?
-                ORDER BY started_at DESC
+                    r.id,
+                    r.campaign_id,
+                    r.run_type,
+                    r.status,
+                    r.command,
+                    r.campaign_dir,
+                    r.artifact_path,
+                    r.error_message,
+                    r.started_at,
+                    r.completed_at,
+                    r.accepted_candidates,
+                    r.ranked_candidates,
+                    r.config_version_id,
+                    v.version_number AS config_version_number
+                FROM pipeline_runs r
+                LEFT JOIN pipeline_config_versions v ON v.id = r.config_version_id
+                WHERE r.campaign_id = ?
+                ORDER BY r.started_at DESC
                 LIMIT 1
                 """,
                 (campaign_id,),
@@ -953,12 +1705,20 @@ def stream_pipeline_events(
             conn.close()
 
             latest_run = dict(row) if row else None
-            signature = json.dumps(latest_run, sort_keys=True, default=str)
+            progress = (
+                _read_pipeline_progress(latest_run.get("campaign_dir"))
+                if latest_run and latest_run.get("status") == "Running"
+                else None
+            )
+            signature = json.dumps(
+                {"run": latest_run, "progress": progress}, sort_keys=True, default=str
+            )
 
             if signature != last_signature:
                 payload = {
                     "campaign_id": campaign_id,
                     "run": latest_run,
+                    "progress": progress,
                     "server_time": utc_now(),
                 }
                 yield f"event: pipeline_run_update\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
@@ -988,7 +1748,10 @@ def run_pipeline(
 ):
     allowed_run_types = {
         "full": [],
-        "queries": ["--queries-only"],
+        # --force-queries because asking for a queries run is an explicit request to regenerate
+        # them; without it QueryGenerator short-circuits on the cached generated_queries.yaml
+        # and the run is a no-op.
+        "queries": ["--queries-only", "--force-queries"],
         "search": ["--search-only"],
         "filter": ["--filter-only"],
         "rank": ["--rank-only"],
@@ -1007,23 +1770,19 @@ def run_pipeline(
         conn.close()
         raise HTTPException(status_code=404, detail="Campaign not found")
 
-    config_row = conn.execute(
-        """
-        SELECT pipeline_dir
-        FROM pipeline_campaign_configs
-        WHERE campaign_id = ?
-        """,
-        (campaign_id,),
-    ).fetchone()
+    # Runs always target the current config version, so an edited config is what gets run.
+    current_version = _get_config_version(conn, campaign_id)
 
-    if not config_row:
+    if not current_version:
         conn.close()
         raise HTTPException(status_code=400, detail="Pipeline config not found. Save config first.")
 
-    pipeline_dir = Path(config_row["pipeline_dir"])
+    pipeline_dir = Path(current_version["pipeline_dir"])
     if not pipeline_dir.exists():
         conn.close()
         raise HTTPException(status_code=404, detail="Pipeline directory not found")
+
+    _mark_stale_running_runs(conn)
 
     running_row = conn.execute(
         """
@@ -1078,9 +1837,10 @@ def run_pipeline(
             campaign_dir,
             artifact_path,
             started_at,
-            created_by_user_id
+            created_by_user_id,
+            config_version_id
         )
-        VALUES (?, ?, 'Running', ?, ?, ?, ?, ?)
+        VALUES (?, ?, 'Running', ?, ?, ?, ?, ?, ?)
         """,
         (
             campaign_id,
@@ -1090,6 +1850,7 @@ def run_pipeline(
             str(pipeline_dir / "data" / "ranked_results.json"),
             now,
             current_user["id"],
+            current_version["id"],
         ),
     )
     run_id = cur.lastrowid
@@ -1115,21 +1876,28 @@ def run_pipeline(
 def import_ranked_results(
     campaign_id: int,
     ranked_results_path: str = Form(""),
+    config_version_id: Optional[int] = Form(default=None),
     current_user=Depends(get_current_user),
 ):
+    """Import a run's ranked_results.json into the DB, attributed to a config version.
+
+    config_version_id should be the version the run belonged to (the frontend passes the
+    completed run's own value). Results are keyed per version, so importing a new run no longer
+    overwrites the candidate list an earlier config produced.
+    """
     conn = get_connection()
 
     if not _get_owned_campaign(conn, campaign_id, current_user):
         conn.close()
         raise HTTPException(status_code=404, detail="Campaign not found")
 
-    config_row = conn.execute("""
-        SELECT pipeline_dir
-        FROM pipeline_campaign_configs
-        WHERE campaign_id = ?
-    """, (campaign_id,)).fetchone()
+    version_row = _get_config_version(conn, campaign_id, config_version_id)
+    if config_version_id is not None and not version_row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Config version not found")
 
-    pipeline_dir = config_row["pipeline_dir"] if config_row else ""
+    version_id = version_row["id"] if version_row else 0
+    pipeline_dir = version_row["pipeline_dir"] if version_row else ""
     artifact_path = ranked_results_path.strip()
     if not artifact_path:
         if not pipeline_dir:
@@ -1155,9 +1923,10 @@ def import_ranked_results(
             campaign_dir,
             artifact_path,
             started_at,
-            created_by_user_id
+            created_by_user_id,
+            config_version_id
         )
-        VALUES (?, 'import', 'Running', ?, ?, ?, ?, ?)
+        VALUES (?, 'import', 'Running', ?, ?, ?, ?, ?, ?)
     """, (
         campaign_id,
         "import-ranked-results",
@@ -1165,6 +1934,7 @@ def import_ranked_results(
         str(artifact_file),
         now,
         current_user["id"],
+        version_id,
     ))
     run_id = run_cur.lastrowid
 
@@ -1319,6 +2089,7 @@ def import_ranked_results(
             conn.execute("""
                 INSERT INTO candidate_rankings (
                     campaign_id,
+                    config_version_id,
                     candidate_id,
                     manual_score,
                     category,
@@ -1331,8 +2102,8 @@ def import_ranked_results(
                     created_at,
                     updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(campaign_id, candidate_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(campaign_id, config_version_id, candidate_id)
                 DO UPDATE SET
                     manual_score = excluded.manual_score,
                     category = excluded.category,
@@ -1345,6 +2116,7 @@ def import_ranked_results(
                     updated_at = excluded.updated_at
             """, (
                 campaign_id,
+                version_id,
                 candidate_id,
                 manual.get("manual_score"),
                 manual.get("category"),
@@ -1395,6 +2167,7 @@ def import_ranked_results(
         "success": True,
         "run_id": run_id,
         "artifact_path": str(artifact_file),
+        "config_version_id": version_id,
         "created_candidates": created_count,
         "updated_candidates": updated_count,
         "linked_to_campaign": linked_count,
@@ -1404,6 +2177,7 @@ def import_ranked_results(
 @app.get("/api/campaigns/{campaign_id}/export/excel")
 def export_campaign_excel(
     campaign_id: int,
+    config_version_id: Optional[int] = Query(default=None),
     token: Optional[str] = Query(default=None),
     authorization: Optional[str] = Header(default=None),
 ):
@@ -1423,17 +2197,12 @@ def export_campaign_excel(
         conn.close()
         raise HTTPException(status_code=404, detail="Campaign not found")
 
-    config_row = conn.execute("""
-        SELECT pipeline_dir
-        FROM pipeline_campaign_configs
-        WHERE campaign_id = ?
-    """, (campaign_id,)).fetchone()
-    conn.close()
+    try:
+        pipeline_dir = _resolve_pipeline_dir(conn, campaign_id, current_user, config_version_id)
+    finally:
+        conn.close()
 
-    if not config_row:
-        raise HTTPException(status_code=404, detail="Pipeline config not found for this campaign")
-
-    output_dir = Path(config_row["pipeline_dir"]) / "output"
+    output_dir = pipeline_dir / "output"
     xlsx_files = sorted(
         output_dir.glob("shortlist_*.xlsx"),
         key=lambda p: p.stat().st_mtime,
@@ -1457,28 +2226,31 @@ def _resolve_ranked_results_artifact(
     conn,
     campaign_id: int,
     current_user,
+    config_version_id: Optional[int] = None,
 ):
-    if not _get_owned_campaign(conn, campaign_id, current_user):
-        raise HTTPException(status_code=404, detail="Campaign not found")
-
-    pipeline_dir = _resolve_pipeline_dir(conn, campaign_id, current_user)
+    pipeline_dir = _resolve_pipeline_dir(conn, campaign_id, current_user, config_version_id)
     return pipeline_dir / "data" / "ranked_results.json"
 
 
-def _resolve_pipeline_dir(conn, campaign_id: int, current_user) -> Path:
+def _resolve_pipeline_dir(
+    conn,
+    campaign_id: int,
+    current_user,
+    config_version_id: Optional[int] = None,
+) -> Path:
+    """Folder holding a campaign's pipeline artifacts — per config version.
+
+    Each version has its own folder, so passing config_version_id reads that version's
+    artifacts (search results, ranked output, scoring policy) instead of the newest ones.
+    """
     if not _get_owned_campaign(conn, campaign_id, current_user):
         raise HTTPException(status_code=404, detail="Campaign not found")
 
-    config_row = conn.execute(
-        """
-        SELECT pipeline_dir
-        FROM pipeline_campaign_configs
-        WHERE campaign_id = ?
-        """,
-        (campaign_id,),
-    ).fetchone()
+    version_row = _get_config_version(conn, campaign_id, config_version_id)
+    if config_version_id is not None and not version_row:
+        raise HTTPException(status_code=404, detail="Config version not found")
 
-    pipeline_dir = (config_row["pipeline_dir"] if config_row else "").strip()
+    pipeline_dir = (version_row["pipeline_dir"] if version_row else "").strip()
     if not pipeline_dir:
         raise HTTPException(
             status_code=400,
@@ -1488,8 +2260,13 @@ def _resolve_pipeline_dir(conn, campaign_id: int, current_user) -> Path:
     return Path(pipeline_dir)
 
 
-def _resolve_search_results_files(conn, campaign_id: int, current_user) -> list[Path]:
-    pipeline_dir = _resolve_pipeline_dir(conn, campaign_id, current_user)
+def _resolve_search_results_files(
+    conn,
+    campaign_id: int,
+    current_user,
+    config_version_id: Optional[int] = None,
+) -> list[Path]:
+    pipeline_dir = _resolve_pipeline_dir(conn, campaign_id, current_user, config_version_id)
     data_dir = pipeline_dir / "data"
     if not data_dir.exists():
         return []
@@ -1500,15 +2277,19 @@ def _resolve_search_results_files(conn, campaign_id: int, current_user) -> list[
 @app.get("/api/campaigns/{campaign_id}/pipeline/scoring-explainer")
 def get_scoring_explainer(
     campaign_id: int,
+    config_version_id: Optional[int] = Query(default=None),
     current_user=Depends(get_current_user),
 ):
     """Feature schema + scoring policy for this campaign, so the UI can show *why* each
     feature exists (name/description/reason) and how much it weighs — not just a bare
     feature_id and a number. Recruiters otherwise have no way to tell what a score is
-    actually measuring or how it was weighted."""
+    actually measuring or how it was weighted.
+
+    Version-scoped: each config version designs its own features, so an old version's
+    candidate list is explained by the policy that actually scored it."""
     conn = get_connection()
     try:
-        pipeline_dir = _resolve_pipeline_dir(conn, campaign_id, current_user)
+        pipeline_dir = _resolve_pipeline_dir(conn, campaign_id, current_user, config_version_id)
     finally:
         conn.close()
 
@@ -1563,6 +2344,7 @@ def get_scoring_explainer(
 @app.get("/api/campaigns/{campaign_id}/pipeline/usage-summary")
 def get_usage_summary_endpoint(
     campaign_id: int,
+    config_version_id: Optional[int] = Query(default=None),
     current_user=Depends(get_current_user),
 ):
     """LLM cost/token usage for this campaign's most recent pipeline run.
@@ -1572,7 +2354,7 @@ def get_usage_summary_endpoint(
     """
     conn = get_connection()
     try:
-        pipeline_dir = _resolve_pipeline_dir(conn, campaign_id, current_user)
+        pipeline_dir = _resolve_pipeline_dir(conn, campaign_id, current_user, config_version_id)
     finally:
         conn.close()
 
@@ -1591,11 +2373,12 @@ def get_usage_summary_endpoint(
 @app.get("/api/campaigns/{campaign_id}/pipeline/search-results-status")
 def get_search_results_status(
     campaign_id: int,
+    config_version_id: Optional[int] = Query(default=None),
     current_user=Depends(get_current_user),
 ):
     conn = get_connection()
     try:
-        files = _resolve_search_results_files(conn, campaign_id, current_user)
+        files = _resolve_search_results_files(conn, campaign_id, current_user, config_version_id)
     finally:
         conn.close()
 
@@ -1619,11 +2402,12 @@ def get_search_results_status(
 @app.get("/api/campaigns/{campaign_id}/pipeline/export-search-csv")
 def export_search_csv(
     campaign_id: int,
+    config_version_id: Optional[int] = Query(default=None),
     current_user=Depends(get_current_user),
 ):
     conn = get_connection()
     try:
-        files = _resolve_search_results_files(conn, campaign_id, current_user)
+        files = _resolve_search_results_files(conn, campaign_id, current_user, config_version_id)
     finally:
         conn.close()
 
@@ -1662,6 +2446,7 @@ def export_search_csv(
 @app.get("/api/campaigns/{campaign_id}/pipeline/ranked-results-status")
 def get_ranked_results_status(
     campaign_id: int,
+    config_version_id: Optional[int] = Query(default=None),
     current_user=Depends(get_current_user),
 ):
     conn = get_connection()
@@ -1670,6 +2455,7 @@ def get_ranked_results_status(
             conn,
             campaign_id,
             current_user,
+            config_version_id,
         )
     finally:
         conn.close()
@@ -1683,6 +2469,7 @@ def get_ranked_results_status(
 @app.get("/api/campaigns/{campaign_id}/pipeline/export-ranked-csv")
 def export_ranked_csv(
     campaign_id: int,
+    config_version_id: Optional[int] = Query(default=None),
     current_user=Depends(get_current_user),
 ):
     conn = get_connection()
@@ -1691,6 +2478,7 @@ def export_ranked_csv(
             conn,
             campaign_id,
             current_user,
+            config_version_id,
         )
     finally:
         conn.close()
@@ -1724,12 +2512,24 @@ def export_ranked_csv(
 
 
 @app.get("/api/campaigns/{campaign_id}/rankings")
-def list_campaign_rankings(campaign_id: int, current_user=Depends(get_current_user)):
+def list_campaign_rankings(
+    campaign_id: int,
+    config_version_id: Optional[int] = Query(default=None),
+    current_user=Depends(get_current_user),
+):
+    """Rankings for one config version — the current one unless another is requested."""
     conn = get_connection()
 
     if not _get_owned_campaign(conn, campaign_id, current_user):
         conn.close()
         raise HTTPException(status_code=404, detail="Campaign not found")
+
+    version_row = _get_config_version(conn, campaign_id, config_version_id)
+    if config_version_id is not None and not version_row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Config version not found")
+
+    version_id = version_row["id"] if version_row else 0
 
     rows = conn.execute("""
         SELECT
@@ -1750,9 +2550,9 @@ def list_campaign_rankings(campaign_id: int, current_user=Depends(get_current_us
             cr.updated_at
         FROM candidate_rankings cr
         JOIN candidates c ON c.id = cr.candidate_id
-        WHERE cr.campaign_id = ?
+        WHERE cr.campaign_id = ? AND cr.config_version_id = ?
         ORDER BY cr.rank ASC, cr.manual_score DESC
-    """, (campaign_id,)).fetchall()
+    """, (campaign_id, version_id)).fetchall()
     conn.close()
 
     results = []
@@ -1771,8 +2571,15 @@ def list_campaign_candidates(
     campaign_id: int,
     page: int = 1,
     page_size: int = 10,
+    config_version_id: Optional[int] = Query(default=None),
     current_user=Depends(get_current_user),
 ):
+    """Candidates for a campaign.
+
+    With `config_version_id`, returns just the candidates that version's run produced — one
+    distinct list per config the recruiter has run. Without it, returns every candidate ever
+    found for the campaign (all versions combined), which is what the dashboard shows.
+    """
     if page < 1:
         page = 1
     if page_size < 1:
@@ -1788,17 +2595,49 @@ def list_campaign_candidates(
         conn.close()
         raise HTTPException(status_code=404, detail="Campaign not found")
 
-    total_count = conn.execute(
+    if config_version_id is not None:
+        version_row = _get_config_version(conn, campaign_id, config_version_id)
+        if not version_row:
+            conn.close()
+            raise HTTPException(status_code=404, detail="Config version not found")
+
+        # candidate_rankings is the per-version membership record: the import writes one row per
+        # candidate in that version's ranked_results.json.
+        membership_sql = """
+            FROM candidate_rankings cr
+            JOIN candidates cand ON cand.id = cr.candidate_id
+            LEFT JOIN candidate_skills cs ON cs.candidate_id = cand.id
+            LEFT JOIN skills s ON s.id = cs.skill_id
+            WHERE cr.campaign_id = ? AND cr.config_version_id = ?
         """
-        SELECT COUNT(*) AS count
-        FROM campaign_candidates
-        WHERE campaign_id = ?
-        """,
-        (campaign_id,),
-    ).fetchone()["count"]
+        membership_params = (campaign_id, config_version_id)
+        count_sql = """
+            SELECT COUNT(*) AS count
+            FROM candidate_rankings
+            WHERE campaign_id = ? AND config_version_id = ?
+        """
+    else:
+        membership_sql = """
+            FROM campaign_candidates cc
+            JOIN candidates cand ON cand.id = cc.candidate_id
+            LEFT JOIN candidate_skills cs ON cs.candidate_id = cand.id
+            LEFT JOIN skills s ON s.id = cs.skill_id
+            LEFT JOIN candidate_rankings cr
+                ON cr.campaign_id = cc.campaign_id
+                AND cr.candidate_id = cc.candidate_id
+            WHERE cc.campaign_id = ?
+        """
+        membership_params = (campaign_id,)
+        count_sql = """
+            SELECT COUNT(*) AS count
+            FROM campaign_candidates
+            WHERE campaign_id = ?
+        """
+
+    total_count = conn.execute(count_sql, membership_params).fetchone()["count"]
 
     rows = conn.execute(
-        """
+        f"""
         SELECT
             cand.id,
             cand.candidate_code,
@@ -1822,19 +2661,12 @@ def list_campaign_candidates(
             cr.feature_contributions_json,
             cr.raw_agent_json,
             cr.raw_manual_json
-        FROM campaign_candidates cc
-        JOIN candidates cand ON cand.id = cc.candidate_id
-        LEFT JOIN candidate_skills cs ON cs.candidate_id = cand.id
-        LEFT JOIN skills s ON s.id = cs.skill_id
-        LEFT JOIN candidate_rankings cr
-            ON cr.campaign_id = cc.campaign_id
-            AND cr.candidate_id = cc.candidate_id
-        WHERE cc.campaign_id = ?
+        {membership_sql}
         GROUP BY cand.id
         ORDER BY COALESCE(cr.rank, 999999) ASC, cand.score DESC
         LIMIT ? OFFSET ?
         """,
-        (campaign_id, page_size, offset),
+        (*membership_params, page_size, offset),
     ).fetchall()
     conn.close()
 
@@ -1855,6 +2687,7 @@ def list_campaign_candidates(
 
     return {
         "items": candidates,
+        "config_version_id": config_version_id,
         "pagination": {
             "page": page,
             "page_size": page_size,
@@ -2319,6 +3152,17 @@ def delete_campaign(campaign_id: int, current_user=Depends(get_current_user)):
     ).fetchall()
     candidate_ids = [row["candidate_id"] for row in candidate_rows]
 
+    # Every config version has its own folder, so deleting only the current one would leak the
+    # previous versions' folders onto disk.
+    pipeline_dirs = {
+        row["pipeline_dir"]
+        for row in conn.execute(
+            "SELECT pipeline_dir FROM pipeline_config_versions WHERE campaign_id = ?",
+            (campaign_id,),
+        ).fetchall()
+        if row["pipeline_dir"]
+    }
+
     pipeline_cfg = conn.execute(
         """
         SELECT pipeline_dir
@@ -2327,7 +3171,8 @@ def delete_campaign(campaign_id: int, current_user=Depends(get_current_user)):
         """,
         (campaign_id,),
     ).fetchone()
-    pipeline_dir = pipeline_cfg["pipeline_dir"] if pipeline_cfg else None
+    if pipeline_cfg and pipeline_cfg["pipeline_dir"]:
+        pipeline_dirs.add(pipeline_cfg["pipeline_dir"])
 
     deleted_candidates = 0
 
@@ -2347,7 +3192,8 @@ def delete_campaign(campaign_id: int, current_user=Depends(get_current_user)):
             (campaign_id,),
         )
 
-        _remove_pipeline_campaign_dir(pipeline_dir)
+        for pipeline_dir in pipeline_dirs:
+            _remove_pipeline_campaign_dir(pipeline_dir)
 
         conn.commit()
     except Exception as exc:
@@ -2364,7 +3210,8 @@ def delete_campaign(campaign_id: int, current_user=Depends(get_current_user)):
         "success": True,
         "campaign_id": campaign_id,
         "deleted_candidates": deleted_candidates,
-        "deleted_campaign_dir": bool(pipeline_dir),
+        "deleted_campaign_dir": bool(pipeline_dirs),
+        "deleted_campaign_dirs": len(pipeline_dirs),
     }
 
 @app.get("/api/candidates/{candidate_id}")

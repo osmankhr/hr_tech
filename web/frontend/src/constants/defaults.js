@@ -33,6 +33,17 @@ export const DEFAULT_SKILL_SUGGESTIONS = [
   "RAG",
 ];
 
+// Short labels for the run-progress stepper. The pipeline reports the same phase keys in
+// data/pipeline_status.json (see candidate_pool/scripts/pipeline_status.py, which carries the
+// longer sentence-style label used for the active phase).
+export const PIPELINE_PHASE_LABELS = {
+  queries: "Queries",
+  search: "Search",
+  filter: "AI review",
+  ranking: "Ranking",
+  report: "Report",
+};
+
 export const EMPTY_CAMPAIGN_FORM = {
   campaignName: "",
   location: "",

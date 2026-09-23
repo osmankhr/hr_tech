@@ -8,7 +8,10 @@ import { Card } from "../components/ui/Card";
 import { Icons } from "../components/ui/Icon";
 import { KPI } from "../components/ui/KPI";
 import { API_BASE_URL } from "../config/api";
-import { EMPTY_CAMPAIGN_FORM } from "../constants/defaults";
+import { EMPTY_CAMPAIGN_FORM, PIPELINE_PHASE_LABELS } from "../constants/defaults";
+
+// Config-version list + selection, tagged with the campaign they belong to.
+const EMPTY_VERSION_STATE = { campaignId: "", rows: [], selectedId: "" };
 import { CampaignDetailModal } from "../features/campaigns/CampaignDetailModal";
 import { CampaignDeleteModal } from "../features/campaigns/CampaignDeleteModal";
 import { CampaignEditModal } from "../features/campaigns/CampaignEditModal";
@@ -135,14 +138,55 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
   const [pipelineError, setPipelineError] = useState("");
   const [pipelineMessage, setPipelineMessage] = useState("");
   const [pipelineMaxCandidates, setPipelineMaxCandidates] = useState("100");
+  // Which phase the running subprocess is in (from SSE), so the progress box names the stage
+  // instead of only saying "this can take a few minutes".
+  const [pipelineProgress, setPipelineProgress] = useState(null);
   const [campaignArtifactStatus, setCampaignArtifactStatus] = useState({});
   const [campaignExportBusy, setCampaignExportBusy] = useState({});
-  const [configVersions, setConfigVersions] = useState([]);
   const [configVersionsLoading, setConfigVersionsLoading] = useState(false);
   const [configEditOpen, setConfigEditOpen] = useState(false);
   const [configEditBusy, setConfigEditBusy] = useState(false);
   const [configEditError, setConfigEditError] = useState("");
+  // Which config version's results are being viewed, per tab. Defaults to the current version;
+  // picking an older one shows the candidate list that config produced.
+  //
+  // Both the list and the selection are stored with the campaign they were loaded for, and read
+  // back through the derived values below. Version ids are unique across all campaigns, so a
+  // selection left over from the previously viewed campaign is a *valid-looking* id that
+  // belongs to someone else — sending it with the new campaign's requests is what produced the
+  // "Config version not found" banner. Clearing it in an effect would be too late: the fetch
+  // effects run in the same commit as the campaign switch and would fire once on the stale
+  // pair. Deriving it during render means the mismatch never reaches a request.
+  const [pipelineVersionState, setPipelineVersionState] = useState(EMPTY_VERSION_STATE);
+  const [dashboardVersionState, setDashboardVersionState] = useState(EMPTY_VERSION_STATE);
   const autoImportedRunIdsRef = useRef(new Set());
+
+  const configVersions =
+    pipelineVersionState.campaignId === pipelineCampaignId ? pipelineVersionState.rows : [];
+  const pipelineVersionId =
+    pipelineVersionState.campaignId === pipelineCampaignId ? pipelineVersionState.selectedId : "";
+  const dashboardConfigVersions =
+    dashboardVersionState.campaignId === dashboardCampaignId ? dashboardVersionState.rows : [];
+  const dashboardVersionId =
+    dashboardVersionState.campaignId === dashboardCampaignId
+      ? dashboardVersionState.selectedId
+      : "";
+
+  const setPipelineVersionId = (versionId) => {
+    setPipelineVersionState((previous) => ({
+      ...previous,
+      campaignId: pipelineCampaignId,
+      selectedId: String(versionId || ""),
+    }));
+  };
+
+  const setDashboardVersionId = (versionId) => {
+    setDashboardVersionState((previous) => ({
+      ...previous,
+      campaignId: dashboardCampaignId,
+      selectedId: String(versionId || ""),
+    }));
+  };
 
   const activeCampaigns = useMemo(
     () => campaigns.filter((campaign) => campaign.status === "Active"),
@@ -208,9 +252,61 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
     [pipelineRuns]
   );
 
+  // The backend sends the phase list the run will actually visit, so a partial run
+  // (--filter-only and friends) doesn't display stages it will never reach.
+  const pipelinePhaseSteps = useMemo(() => {
+    const phases = pipelineProgress?.phases;
+    if (!Array.isArray(phases) || phases.length === 0) {
+      return [];
+    }
+
+    const activeIndex = phases.indexOf(pipelineProgress.phase);
+    return phases.map((phase, index) => ({
+      phase,
+      label: PIPELINE_PHASE_LABELS[phase] || phase,
+      state:
+        activeIndex === -1 || index > activeIndex
+          ? "pending"
+          : index === activeIndex
+            ? "active"
+            : "done",
+    }));
+  }, [pipelineProgress]);
+
+  const pipelineStepLabel = useMemo(() => {
+    const phases = pipelineProgress?.phases;
+    if (!Array.isArray(phases)) {
+      return "";
+    }
+    const position = phases.indexOf(pipelineProgress.phase);
+    return position === -1 ? "" : `Step ${position + 1} of ${phases.length}`;
+  }, [pipelineProgress]);
+
+  const pipelineProgressPercent = useMemo(() => {
+    const { current, total } = pipelineProgress || {};
+    if (typeof current !== "number" || typeof total !== "number" || total <= 0) {
+      return null;
+    }
+    return Math.min(100, Math.round((current / total) * 100));
+  }, [pipelineProgress]);
+
   const currentConfigVersion = useMemo(
     () => configVersions.find((version) => version.isCurrent) || null,
     [configVersions]
+  );
+
+  const viewedConfigVersion = useMemo(
+    () =>
+      configVersions.find((version) => String(version.id) === String(pipelineVersionId)) || null,
+    [configVersions, pipelineVersionId]
+  );
+
+  const selectedDashboardVersion = useMemo(
+    () =>
+      dashboardConfigVersions.find(
+        (version) => String(version.id) === String(dashboardVersionId)
+      ) || null,
+    [dashboardConfigVersions, dashboardVersionId]
   );
 
   const getArtifactStatus = (campaignId) => {
@@ -300,6 +396,43 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
     }
   }, [pipelineCampaignId, activeCampaigns]);
 
+  // The dashboard browses one campaign's candidates; config versions let it show the list from
+  // any config that's been run, not only the newest.
+  useEffect(() => {
+    if (!dashboardCampaignId) {
+      setDashboardVersionState(EMPTY_VERSION_STATE);
+      return;
+    }
+
+    const campaignId = String(dashboardCampaignId);
+    let cancelled = false;
+    campaignApi
+      .getConfigVersions(campaignId)
+      .then((rows) => {
+        if (cancelled) return;
+        const versions = Array.isArray(rows) ? rows.map(mapConfigVersionFromApi) : [];
+        setDashboardVersionState((previous) => ({
+          campaignId,
+          rows: versions,
+          selectedId: pickVersionId(
+            previous.campaignId === campaignId ? previous.selectedId : "",
+            versions
+          ),
+        }));
+      })
+      .catch(() => {
+        if (!cancelled) setDashboardVersionState(EMPTY_VERSION_STATE);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [dashboardCampaignId, campaigns]);
+
+  useEffect(() => {
+    setDashboardPage(1);
+  }, [dashboardVersionId]);
+
   useEffect(() => {
     if (!dashboardCampaignId) {
       setDashboardCandidates([]);
@@ -314,7 +447,8 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
         const data = await campaignApi.getCandidatesByCampaign(
           dashboardCampaignId,
           dashboardPage,
-          10
+          10,
+          dashboardVersionId || null
         );
 
         const mapped = (data.items || []).map(mapCampaignCandidate);
@@ -328,7 +462,7 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
     };
 
     load();
-  }, [dashboardCampaignId, dashboardPage, setApiError]);
+  }, [dashboardCampaignId, dashboardPage, dashboardVersionId, setApiError]);
 
   useEffect(() => {
     if (!dashboardCampaignId) {
@@ -338,7 +472,9 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
 
     let cancelled = false;
     campaignApi
-      .getScoringExplainer(dashboardCampaignId)
+      // Each version designs its own scoring features, so the breakdown has to come from the
+      // version that actually scored the candidates on screen.
+      .getScoringExplainer(dashboardCampaignId, dashboardVersionId || null)
       .then((data) => {
         if (!cancelled) setScoringExplainer(data);
       })
@@ -349,20 +485,42 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
     return () => {
       cancelled = true;
     };
-  }, [dashboardCampaignId]);
+  }, [dashboardCampaignId, dashboardVersionId]);
+
+  // Keeps an explicit selection if it still exists (so a background refresh doesn't yank the
+  // recruiter off the version they're reading), otherwise follows the current version.
+  const pickVersionId = (previous, versions) => {
+    if (previous && versions.some((version) => String(version.id) === String(previous))) {
+      return previous;
+    }
+    const fallback = versions.find((version) => version.isCurrent) || versions[0];
+    return fallback ? String(fallback.id) : "";
+  };
 
   const loadConfigVersions = async (campaignId) => {
     if (!campaignId) {
-      setConfigVersions([]);
-      return;
+      setPipelineVersionState(EMPTY_VERSION_STATE);
+      return [];
     }
 
     setConfigVersionsLoading(true);
     try {
       const rows = await campaignApi.getConfigVersions(campaignId);
-      setConfigVersions(Array.isArray(rows) ? rows.map(mapConfigVersionFromApi) : []);
+      const versions = Array.isArray(rows) ? rows.map(mapConfigVersionFromApi) : [];
+      // Stamped with the campaign it was fetched for: this resolves after an await, by which
+      // point the user may have switched campaigns, and the derived values above discard it.
+      setPipelineVersionState((previous) => ({
+        campaignId: String(campaignId),
+        rows: versions,
+        selectedId: pickVersionId(
+          previous.campaignId === String(campaignId) ? previous.selectedId : "",
+          versions
+        ),
+      }));
+      return versions;
     } catch (error) {
       setPipelineError(error.message || "Could not load config version history.");
+      return [];
     } finally {
       setConfigVersionsLoading(false);
     }
@@ -403,10 +561,16 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
       setConfigEditOpen(false);
       setPipelineMessage(
         result?.new_version_created
-          ? `Saved as config version ${result.version_number}. Run the pipeline to see new results.`
+          ? `Saved as config version ${result.version_number}. Earlier versions keep their ` +
+              "candidate lists — run the pipeline to populate this one."
           : "Config updated."
       );
+      // Jump to the version that was just saved rather than whatever was being viewed.
+      if (result?.config_version_id) {
+        setPipelineVersionId(String(result.config_version_id));
+      }
       await loadConfigVersions(pipelineCampaignId);
+      await loadCampaigns().catch(() => {});
       refreshArtifactStatuses([pipelineCampaignId]).catch(() => {});
     } catch (error) {
       setConfigEditError(error.message || "Could not save config changes.");
@@ -416,18 +580,19 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
   };
 
   useEffect(() => {
+    // Banners describe the campaign that was on screen when they were raised; carrying them
+    // across a switch makes an old failure look like it came from whatever the user just did.
+    setPipelineError("");
+    setPipelineMessage("");
+
     if (!pipelineCampaignId) {
       return;
     }
 
     const load = async () => {
       try {
-        const [runs, rankingItems] = await Promise.all([
-          campaignApi.getPipelineRuns(pipelineCampaignId),
-          campaignApi.getRankings(pipelineCampaignId),
-        ]);
+        const runs = await campaignApi.getPipelineRuns(pipelineCampaignId);
         setPipelineRuns(Array.isArray(runs) ? runs : []);
-        setRankings(Array.isArray(rankingItems) ? rankingItems : []);
         await loadConfigVersions(pipelineCampaignId);
       } catch (error) {
         setPipelineError(error.message || "Could not load pipeline state.");
@@ -437,19 +602,44 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
     load();
   }, [pipelineCampaignId]);
 
+  // Rankings are per config version, so they reload whenever the viewed version changes.
   useEffect(() => {
-    if (!pipelineCampaignId) {
+    if (!pipelineCampaignId || !pipelineVersionId) {
+      setRankings([]);
+      return;
+    }
+
+    let cancelled = false;
+    campaignApi
+      .getRankings(pipelineCampaignId, pipelineVersionId)
+      .then((items) => {
+        if (!cancelled) setRankings(Array.isArray(items) ? items : []);
+      })
+      .catch((error) => {
+        if (!cancelled) setPipelineError(error.message || "Could not load rankings.");
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [pipelineCampaignId, pipelineVersionId]);
+
+  useEffect(() => {
+    if (!pipelineCampaignId || !pipelineVersionId) {
       setUsageSummary(null);
       return;
     }
 
     campaignApi
-      .getUsageSummary(pipelineCampaignId)
+      .getUsageSummary(pipelineCampaignId, pipelineVersionId)
       .then((data) => setUsageSummary(data))
       .catch(() => setUsageSummary(null));
-  }, [pipelineCampaignId, pipelineRuns.length]);
+  }, [pipelineCampaignId, pipelineVersionId, pipelineRuns.length]);
 
   useEffect(() => {
+    // Progress belongs to one campaign's run; switching campaigns must not carry it over.
+    setPipelineProgress(null);
+
     if (!pipelineCampaignId) {
       return;
     }
@@ -491,7 +681,13 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
 
         try {
           setPipelineMessage("Pipeline completed. Importing ranked results...");
-          await campaignApi.importRankedResults(pipelineCampaignId, "");
+          // Attribute the import to the version this run used, so results land on the right
+          // version even if the config has since moved on.
+          await campaignApi.importRankedResults(
+            pipelineCampaignId,
+            "",
+            run.config_version_id ?? null
+          );
         } catch (error) {
           setPipelineError(
             error?.message ||
@@ -501,8 +697,12 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
       }
 
       if (run.status === "Completed") {
+        if (run.config_version_id) {
+          setPipelineVersionId(String(run.config_version_id));
+        }
+
         campaignApi
-          .getRankings(pipelineCampaignId)
+          .getRankings(pipelineCampaignId, run.config_version_id ?? null)
           .then((items) => setRankings(Array.isArray(items) ? items : []))
           .catch(() => {});
 
@@ -516,6 +716,7 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
     eventSource.addEventListener("pipeline_run_update", async (event) => {
       try {
         const payload = JSON.parse(event.data || "{}");
+        setPipelineProgress(payload.progress || null);
         await upsertRun(payload.run);
       } catch {
         // Ignore malformed SSE payloads.
@@ -1038,7 +1239,34 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
                   renderExtraActions={renderCampaignExportActions}
                 />
 
-                <div>
+                <div className="space-y-4">
+                  {dashboardConfigVersions.length > 1 && (
+                    <Card className="p-4">
+                      <label className="block text-sm">
+                        <span className="mb-1 block font-medium text-slate-700">
+                          Config version
+                        </span>
+                        <select
+                          value={dashboardVersionId}
+                          onChange={(event) => setDashboardVersionId(event.target.value)}
+                          className="w-full rounded-lg border border-slate-300 px-3 py-2.5 outline-none focus:border-indigo-600"
+                        >
+                          {dashboardConfigVersions.map((version) => (
+                            <option key={version.id} value={version.id}>
+                              v{version.versionNumber}
+                              {version.isCurrent ? " (current)" : ""} — {version.importedCandidates}{" "}
+                              candidates · {version.createdAt}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <p className="mt-2 text-xs text-slate-500">
+                        Each config version keeps the candidate list its own run produced, so
+                        earlier results stay available after you edit and re-run a campaign.
+                      </p>
+                    </Card>
+                  )}
+
                   {dashboardLoadingCandidates ? (
                     <Card className="p-5">
                       <p className="text-sm text-slate-500">Loading candidates...</p>
@@ -1046,7 +1274,13 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
                   ) : (
                     <CandidatePanel
                       title={`Candidates for ${selectedDashboardCampaign?.campaignName || "Selected Campaign"}`}
-                      subtitle="Campaign-scoped ranked candidates"
+                      subtitle={
+                        selectedDashboardVersion
+                          ? `Config v${selectedDashboardVersion.versionNumber}${
+                              selectedDashboardVersion.isCurrent ? " (current)" : ""
+                            } — ranked candidates from that run`
+                          : "Campaign-scoped ranked candidates"
+                      }
                       candidates={dashboardCandidates}
                       onOpenCandidate={setSelectedCandidate}
                       onEditCandidate={setEditingCandidate}
@@ -1058,7 +1292,7 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
                           <a
                             href={`${API_BASE_URL}/campaigns/${selectedDashboardCampaign.id}/export/excel?token=${encodeURIComponent(
                               localStorage.getItem("hr_auth_token") || ""
-                            )}`}
+                            )}${dashboardVersionId ? `&config_version_id=${dashboardVersionId}` : ""}`}
                             className="rounded-xl border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
                           >
                             Download Excel
@@ -1113,6 +1347,14 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
                         Config is locked while a pipeline run is in progress.
                       </span>
                     )}
+                    {!pipelineRunning &&
+                      viewedConfigVersion &&
+                      !viewedConfigVersion.isCurrent && (
+                        <span className="text-xs text-slate-500">
+                          Viewing v{viewedConfigVersion.versionNumber}'s results. Runs and edits
+                          always apply to the current version.
+                        </span>
+                      )}
                   </div>
                 )}
 
@@ -1128,13 +1370,58 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
 
                 {pipelineRunning && (
                   <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-4">
-                    <div className="flex items-center gap-3">
-                      <div className="h-5 w-5 animate-spin rounded-full border-2 border-amber-700 border-t-transparent" />
-                      <div>
-                        <p className="text-sm font-semibold text-amber-900">Pipeline is running</p>
+                    <div className="flex items-start gap-3">
+                      <div className="mt-0.5 h-5 w-5 shrink-0 animate-spin rounded-full border-2 border-amber-700 border-t-transparent" />
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm font-semibold text-amber-900">
+                          {pipelineProgress?.label
+                            ? `${pipelineProgress.label}${
+                                pipelineProgress.detail ? ` (${pipelineProgress.detail})` : ""
+                              }`
+                            : "Pipeline is running"}
+                          {pipelineStepLabel && (
+                            <span className="ml-2 font-normal text-amber-700">
+                              {pipelineStepLabel}
+                            </span>
+                          )}
+                        </p>
                         <p className="text-xs text-amber-800">
                           This can take a few minutes. Timeline updates automatically while processing.
                         </p>
+
+                        {pipelinePhaseSteps.length > 0 && (
+                          <div className="mt-3 flex flex-wrap gap-1.5">
+                            {pipelinePhaseSteps.map((step) => (
+                              <span
+                                key={step.phase}
+                                className={`rounded-full px-2 py-0.5 text-xs ${
+                                  step.state === "active"
+                                    ? "bg-amber-200 font-medium text-amber-900"
+                                    : step.state === "done"
+                                      ? "bg-emerald-100 text-emerald-800"
+                                      : "bg-white text-slate-500 ring-1 ring-slate-200"
+                                }`}
+                              >
+                                {step.state === "done" ? "✓ " : ""}
+                                {step.label}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+
+                        {pipelineProgressPercent !== null && (
+                          <div className="mt-3">
+                            <div className="h-1.5 w-full overflow-hidden rounded-full bg-amber-200">
+                              <div
+                                className="h-full rounded-full bg-amber-600 transition-all"
+                                style={{ width: `${pipelineProgressPercent}%` }}
+                              />
+                            </div>
+                            <p className="mt-1 text-xs text-amber-800">
+                              {pipelineProgress.current} of {pipelineProgress.total} processed
+                            </p>
+                          </div>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -1224,7 +1511,12 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
                 </Card>
               )}
 
-              <PipelineConfigVersionList versions={configVersions} loading={configVersionsLoading} />
+              <PipelineConfigVersionList
+                versions={configVersions}
+                loading={configVersionsLoading}
+                selectedVersionId={pipelineVersionId}
+                onSelectVersion={(versionId) => setPipelineVersionId(String(versionId))}
+              />
 
               <Card className="p-5">
                 <h3 className="text-base font-semibold text-slate-900">Run Timeline</h3>

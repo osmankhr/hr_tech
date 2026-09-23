@@ -68,6 +68,8 @@ export function mapConfigVersionFromApi(version) {
     pipelineDir: version.pipeline_dir,
     acceptedCandidates: version.accepted_candidates,
     rankedCandidates: version.ranked_candidates,
+    importedCandidates: version.imported_candidates ?? 0,
+    runCount: version.run_count ?? 0,
     createdAt: version.created_at?.slice(0, 10),
   };
 }
