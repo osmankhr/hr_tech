@@ -220,18 +220,6 @@ def ensure_pipeline_tables():
         -- this table only ever gets new rows appended, so no existing row/constraint has to
         -- change to add version history. The current version is always the one with the
         -- highest version_number for a campaign_id.
-        CREATE TABLE IF NOT EXISTS pipeline_config_versions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            campaign_id INTEGER NOT NULL,
-            version_number INTEGER NOT NULL,
-            pipeline_dir TEXT NOT NULL,
-            campaign_yaml_path TEXT NOT NULL,
-            job_description_path TEXT NOT NULL,
-            filter_criteria_path TEXT NOT NULL,
-            created_at TEXT NOT NULL,
-            UNIQUE (campaign_id, version_number),
-            FOREIGN KEY (campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE
-        );
 
         CREATE TABLE IF NOT EXISTS pipeline_campaign_templates (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -279,24 +267,35 @@ def ensure_pipeline_tables():
         CREATE INDEX IF NOT EXISTS idx_candidate_rankings_campaign ON candidate_rankings(campaign_id, rank ASC);
         CREATE INDEX IF NOT EXISTS idx_pipeline_campaign_templates_owner ON pipeline_campaign_templates(created_by_user_id, created_at DESC);
         CREATE INDEX IF NOT EXISTS idx_pipeline_config_versions_campaign ON pipeline_config_versions(campaign_id, version_number DESC);
-<<<<<<< HEAD
-=======
+
     """)
 
     # One-time backfill: every campaign configured before pipeline_config_versions existed gets
     # its current pipeline_campaign_configs row recorded as version 1. Safe to run on every
     # startup -- WHERE NOT IN skips campaigns that already have history.
-    conn.execute("""
-        INSERT INTO pipeline_config_versions (
-            campaign_id, version_number, pipeline_dir,
-            campaign_yaml_path, job_description_path, filter_criteria_path, created_at
-        )
-        SELECT campaign_id, 1, pipeline_dir, campaign_yaml_path, job_description_path,
-               filter_criteria_path, created_at
-        FROM pipeline_campaign_configs
-        WHERE campaign_id NOT IN (SELECT campaign_id FROM pipeline_config_versions)
->>>>>>> main
-    """)
+    # conn.execute("""
+    #     INSERT INTO pipeline_config_versions (
+    #         campaign_id, version_number, pipeline_dir,
+    #         campaign_yaml_path, job_description_path, filter_criteria_path, created_at
+    #     )
+    #     SELECT campaign_id, 1, pipeline_dir, campaign_yaml_path, job_description_path,
+    #            filter_criteria_path, created_at
+    #     FROM pipeline_campaign_configs
+    #     WHERE campaign_id NOT IN (SELECT campaign_id FROM pipeline_config_versions)
+    # """)
+
+    # CREATE TABLE IF NOT EXISTS pipeline_config_versions (
+    #             id INTEGER PRIMARY KEY AUTOINCREMENT,
+    #             campaign_id INTEGER NOT NULL,
+    #             version_number INTEGER NOT NULL,
+    #             pipeline_dir TEXT NOT NULL,
+    #             campaign_yaml_path TEXT NOT NULL,
+    #             job_description_path TEXT NOT NULL,
+    #             filter_criteria_path TEXT NOT NULL,
+    #             created_at TEXT NOT NULL,
+    #             UNIQUE (campaign_id, version_number),
+    #             FOREIGN KEY (campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE
+    #         );
 
     # Backward-compatible columns for run summary metrics.
     for alter_sql in [
@@ -936,7 +935,6 @@ def _pipeline_results_summary(pipeline_dir: Path) -> dict:
         "accepted_candidates": accepted_candidates,
         "ranked_candidates": ranked_candidates,
     }
->>>>>>> main
 
 
 def _extract_years_experience(text: str):
@@ -1219,6 +1217,7 @@ def setup_pipeline_campaign(
         raise
 
     campaign_dir = _new_version_dir(pipeline_name, 1)
+    input_dir = campaign_dir / "input"
 
     if campaign_dir.exists():
         conn.close()
@@ -1259,46 +1258,31 @@ def setup_pipeline_campaign(
 
     now = utc_now()
     conn.execute("""
-        INSERT INTO pipeline_campaign_configs (
-            campaign_id,
-            pipeline_dir,
-            campaign_yaml_path,
-            job_description_path,
-            filter_criteria_path,
-            created_at,
-            updated_at
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(campaign_id)
-        DO UPDATE SET
-            pipeline_dir = excluded.pipeline_dir,
-            campaign_yaml_path = excluded.campaign_yaml_path,
-            job_description_path = excluded.job_description_path,
-            filter_criteria_path = excluded.filter_criteria_path,
-            updated_at = excluded.updated_at
+    INSERT INTO pipeline_campaign_configs (
+    campaign_id,
+    pipeline_dir,
+    campaign_yaml_path,
+    job_description_path,
+    filter_criteria_path,
+    created_at,
+    updated_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(campaign_id)
+    DO UPDATE SET
+    pipeline_dir = excluded.pipeline_dir,
+    campaign_yaml_path = excluded.campaign_yaml_path,
+    job_description_path = excluded.job_description_path,
+    filter_criteria_path = excluded.filter_criteria_path,
+    updated_at = excluded.updated_at
     """, (
-        campaign_id,
-        str(campaign_dir),
-        str(campaign_yaml_path),
-        str(job_description_path),
-        str(filter_criteria_path),
-        now,
-        now,
-    ))
-    conn.execute("""
-        INSERT INTO pipeline_config_versions (
-            campaign_id, version_number, pipeline_dir,
-            campaign_yaml_path, job_description_path, filter_criteria_path, created_at
-        )
-        VALUES (?, 1, ?, ?, ?, ?, ?)
-        ON CONFLICT(campaign_id, version_number) DO NOTHING
-    """, (
-        campaign_id,
-        str(campaign_dir),
-        str(campaign_yaml_path),
-        str(job_description_path),
-        str(filter_criteria_path),
-        now,
+    campaign_id,
+    str(campaign_dir),
+    str(campaign_yaml_path),
+    str(job_description_path),
+    str(filter_criteria_path),
+    now,
+    now,
     ))
 
     # Re-running setup for a campaign that already has versions would orphan them, so the

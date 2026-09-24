@@ -168,15 +168,15 @@ def choose_provider() -> str:
 
     identities = _detect_local_identities()
 
-    codex_users = _env_user_set("CANDIDATE_POOL_CODEX_USERS", "yigit-can-ozkaya")
-    if identities & codex_users:
+    copilot_users = _env_user_set("CANDIDATE_POOL_CODEX_USERS", "yigit-can-ozkaya")
+    if identities & copilot_users:
         return "codex"
 
     # Copilot is no longer auto-selected for anyone (the ING account it was keyed to is out of
     # use); it stays reachable via CANDIDATE_POOL_LLM_PROVIDER=copilot, or by listing an account
     # in CANDIDATE_POOL_COPILOT_USERS.
-    copilot_users = _env_user_set("CANDIDATE_POOL_COPILOT_USERS", "")
-    if identities & copilot_users:
+    codex_users = _env_user_set("CANDIDATE_POOL_COPILOT_USERS", "")
+    if identities & codex_users:
         return "copilot"
 
     return "claude"
