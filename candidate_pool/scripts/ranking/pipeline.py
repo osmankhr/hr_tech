@@ -55,6 +55,13 @@ class RankingPipeline:
 
     def run(self) -> list[dict[str, Any]]:
         candidates = self._load_candidates()
+        pipeline_status.write(
+            self.campaign_dir,
+            "ranking",
+            current=0,
+            total=len(candidates),
+            detail="Preparing scoring model",
+        )
         job_description, filter_criteria = self._load_inputs()
 
         feature_schema = self._load_or_build_feature_schema(

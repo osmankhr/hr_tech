@@ -16,6 +16,7 @@ import { CampaignPanel } from "../features/campaigns/CampaignPanel";
 import { PipelineCampaignCreateForm } from "../features/campaigns/PipelineCampaignCreateForm";
 import { PipelineConfigEditModal } from "../features/campaigns/PipelineConfigEditModal";
 import { PipelineConfigVersionList } from "../features/campaigns/PipelineConfigVersionList";
+import { PipelineRunStatus } from "../features/campaigns/PipelineRunStatus";
 import { CandidateDetailModal } from "../features/candidates/CandidateDetailModal";
 import { CandidateEditModal } from "../features/candidates/CandidateEditModal";
 import { CandidatePanel } from "../features/candidates/CandidatePanel";
@@ -205,6 +206,11 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
 
   const pipelineRunning = useMemo(
     () => pipelineRuns.some((run) => run.status === "Running"),
+    [pipelineRuns]
+  );
+
+  const activePipelineRun = useMemo(
+    () => pipelineRuns.find((run) => run.status === "Running") || null,
     [pipelineRuns]
   );
 
@@ -1129,19 +1135,7 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
                   </div>
                 )}
 
-                {pipelineRunning && (
-                  <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-4">
-                    <div className="flex items-center gap-3">
-                      <div className="h-5 w-5 animate-spin rounded-full border-2 border-amber-700 border-t-transparent" />
-                      <div>
-                        <p className="text-sm font-semibold text-amber-900">Pipeline is running</p>
-                        <p className="text-xs text-amber-800">
-                          This can take a few minutes. Timeline updates automatically while processing.
-                        </p>
-                      </div>
-                    </div>
-                  </div>
-                )}
+                <PipelineRunStatus run={activePipelineRun} />
 
                 {pipelineError && (
                   <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">

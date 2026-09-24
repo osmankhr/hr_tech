@@ -408,6 +408,13 @@ class CandidateFilter:
             self.max_candidates,
             len(skipped),
         )
+        pipeline_status.write(
+            self.campaign_dir,
+            "filter",
+            current=0,
+            total=len(to_review),
+            detail="Preparing candidate reviews",
+        )
 
         reviewed: list[dict[str, Any]] = []
 

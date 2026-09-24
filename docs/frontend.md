@@ -1,7 +1,7 @@
 # `web/frontend/` — React (Vite) Frontend
 
 > Living reference doc. Update this file (not just memory) whenever components/hooks change.
-> Last generated: 2026-09-09.
+> Last updated: 2026-09-24.
 
 ## 1. What this is
 
@@ -166,13 +166,15 @@ Owns nearly all app-level state; no router, manual `view` tab switching
 - **Dashboard tab**: per-campaign paginated candidate list.
 - **Pipeline tab** (largest chunk): current pipeline campaign, `pipelineRuns`, `rankings`,
   `pipelineStages`, editable `queryDraft`, `searchPreview`, `filteredPreview`, per-campaign
-  `campaignArtifactStatus` map, per-export-button busy-state map.
+  `campaignArtifactStatus` map, per-export-button busy-state map. The active run's transient
+  `progress` drives a phase stepper, percentage bar, and candidate/query counts.
 - `autoImportedRunIdsRef` — tracks which pipeline run IDs already triggered an auto-import of
   ranked results, to avoid duplicate imports across SSE re-renders.
 
 **Real-time pipeline updates**: opens `new EventSource(".../pipeline/events?token=...")`
 (token in query param because `EventSource` can't set custom headers) whenever the selected
 pipeline campaign changes. On `pipeline_run_update`: merges the run into `pipelineRuns`;
+this includes live phase/count updates from the backend's filesystem progress bridge;
 auto-calls `campaignApi.importRankedResults` the first time a `full`/`rank` run completes;
 refreshes rankings/stages/query-and-search-previews/global candidates/campaigns and artifact
 statuses. Closes the `EventSource` on unmount or dependency change.
@@ -229,6 +231,11 @@ This page is the composition root for essentially every feature/UI component in 
 - `PipelineCampaignCreateForm.jsx` — the actual **creation** form: name, description, dynamic
   locations list (name+hint rows, add/remove), large Job Description + Filter Criteria markdown
   textareas — these two feed `campaignApi.setupPipeline`'s `job_description`/`filter_criteria`.
+- `PipelineRunStatus.jsx` — recruiter-facing live run card matching the existing slate/indigo UI:
+  active phase, `Step X of Y`, determinate/indeterminate progress bar, filter/ranking candidate
+  counts, search query and candidates-found counts, and compact completed/active/upcoming phase
+  pills. `pipelineProgress.js` contains the pure view-model logic and fallback behavior for the
+  first seconds before a status file exists.
 
 ### `src/features/candidates/`
 - `CandidateCard.jsx` — summary card with status badge (via `getCandidateStatusTone`), rank

@@ -15,6 +15,8 @@ import yaml
 from dotenv import load_dotenv
 from exa_py import Exa
 
+import pipeline_status
+
 load_dotenv()
 
 logger = logging.getLogger(__name__)
@@ -553,13 +555,21 @@ class ExaSearcher:
 
         return location.get("apollo_queries") or self._build_apollo_query_params(loc_name)
 
-    def search_location(self, location: dict[str, Any]) -> tuple[list[dict[str, Any]], list[Any]]:
+    def search_location(
+        self,
+        location: dict[str, Any],
+        *,
+        queries: list[Any] | None = None,
+        progress_offset: int = 0,
+        progress_total: int | None = None,
+        found_offset: int = 0,
+    ) -> tuple[list[dict[str, Any]], list[Any]]:
         loc_name = location["name"]
-        queries = self._load_queries_for_location(location)
+        queries = queries if queries is not None else self._load_queries_for_location(location)
         seen_urls: set[str] = set()
         candidates: list[dict[str, Any]] = []
 
-        for query in queries:
+        for query_index, query in enumerate(queries, 1):
             logger.info("[%s][%s] Searching: %r", loc_name, self.provider, query)
             if self.provider == "exa":
                 batch = self._search_query(str(query), loc_name, seen_urls)
@@ -568,20 +578,53 @@ class ExaSearcher:
             else:
                 if not isinstance(query, dict):
                     logger.warning("[%s][apollo] Skipping non-dict query: %r", loc_name, query)
-                    continue
-                batch = self._search_apollo_query(query, loc_name, seen_urls)
+                    batch = []
+                else:
+                    batch = self._search_apollo_query(query, loc_name, seen_urls)
             candidates.extend(batch)
             logger.info("[%s] +%d new (total %d)", loc_name, len(batch), len(candidates))
+            pipeline_status.write(
+                self.campaign_dir,
+                "search",
+                current=progress_offset + query_index,
+                total=progress_total if progress_total is not None else len(queries),
+                found=found_offset + len(candidates),
+                detail=f"{loc_name} · query {query_index} of {len(queries)}",
+            )
 
         return candidates, queries
 
     def run(self) -> dict[str, list[dict[str, Any]]]:
         results: dict[str, list[dict[str, Any]]] = {}
 
-        for location in self.config.get("locations", []):
+        location_queries = [
+            (location, self._load_queries_for_location(location))
+            for location in self.config.get("locations", [])
+        ]
+        total_queries = sum(len(queries) for _, queries in location_queries)
+        completed_queries = 0
+        total_found = 0
+        pipeline_status.write(
+            self.campaign_dir,
+            "search",
+            current=0,
+            total=total_queries,
+            found=0,
+            detail=f"Preparing {total_queries} search queries",
+        )
+
+        for location, queries in location_queries:
             loc_name = location["name"]
-            candidates, queries_used = self.search_location(location)
+            candidates, queries_used = self.search_location(
+                location,
+                queries=queries,
+                progress_offset=completed_queries,
+                progress_total=total_queries,
+                found_offset=total_found,
+            )
             results[loc_name] = candidates
+            completed_queries += len(queries_used)
+            total_found += len(candidates)
 
             loc_dir = self.campaign_dir / "data" / loc_name
             loc_dir.mkdir(parents=True, exist_ok=True)

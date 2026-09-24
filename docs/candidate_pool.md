@@ -1,7 +1,7 @@
 # `candidate_pool/` — Sourcing Pipeline
 
 > Living reference doc. Update this file (not just memory) whenever scripts/behavior change.
-> Last generated: 2026-09-09.
+> Last updated: 2026-09-24.
 
 ## 1. What this is
 
@@ -76,6 +76,12 @@ python scripts/run_campaign.py campaigns/<name>/ [flags]
 
 At the end of every run, `llm_provider`'s usage counters are written to `data/usage_summary.json`
 (calls/errors/tokens/cost/duration).
+
+While a run is active, `scripts/pipeline_status.py` atomically maintains
+`data/pipeline_status.json`. The payload includes the current phase, the phases planned for this
+run, optional `current`/`total` counters, search candidates found so far, and a recruiter-facing
+detail string. The web backend reads this transient file for live SSE updates; it is cleared in a
+`finally` block and is never a source of truth for completed results.
 
 `rank.py` is a standalone alternate entrypoint to the same `RankingPipeline` (useful for iterating
 on ranking without re-running search/filter): `python scripts/rank.py campaigns/<name>/ [--force-redesign]`.
@@ -153,8 +159,10 @@ sections).
 ### 4.1 `scripts/run_campaign.py` — orchestrator
 - `_setup_logging(log_dir)` — stdout + timestamped file logging under `logs/`.
 - `_load_config(campaign_dir)` — parses `campaign.yaml`.
-- `main()` — argparse, applies CLI overrides into the config dict, gates phases (see §2), lazy-imports
-  each phase module only when needed, writes `usage_summary.json` at the end.
+- `main()` — argparse, applies CLI overrides into the config dict, gates phases (see §2), declares
+  the exact phase plan for full and partial runs, writes each phase transition through
+  `pipeline_status.py`, lazy-imports each phase module only when needed, clears transient progress
+  on success/failure, and writes `usage_summary.json` at the end.
 
 ### 4.2 `scripts/generate_queries.py` — query generation
 - `_extract_pdf_text`, `_load_seed_cvs` — pulls text from `input/seed_cvs/*.pdf` (via `pypdf`) to
@@ -187,7 +195,8 @@ sections).
   search+normalize+dedupe.
 - `_load_queries_for_location(location)` — provider dispatch: manual `queries`/`pdl_queries`/
   `apollo_queries` override in campaign.yaml, else generated/built-in queries.
-- `run()` — per location, writes `data/<location>/raw_results.json` +
+- `run()` — resolves the query plan up front, reports completed queries and the deduplicated
+  candidate count found so far, then per location writes `data/<location>/raw_results.json` +
   `data/<location>/search_metadata.json`.
 
 ### 4.4 `scripts/filter.py` — AI accept/reject/pending classification
@@ -206,10 +215,11 @@ sections).
     candidates by `(search_bucket, query)`, takes each group's top-scoring candidate first (ensures
     every query gets at least one review before the cap is spent), then round-robins remaining
     slots by score — prevents one high-volume query from starving others.
-  - `run()` — reviews up to `filter.max_candidates` in parallel via
+  - `run()` — reports `0 / total` before work begins, then reviews up to
+    `filter.max_candidates` in parallel via
     `ThreadPoolExecutor(max_workers=filter.max_workers)`; candidates beyond the cap get a synthetic
-    PENDING stub (`"Not reviewed — beyond max_candidates cap"`), not dropped. Writes
-    `data/filtered_results.json`.
+    PENDING stub (`"Not reviewed — beyond max_candidates cap"`), not dropped. Each completed review
+    updates live progress from the single collector thread. Writes `data/filtered_results.json`.
 
 ### 4.5 `scripts/rank.py` — standalone ranking entrypoint
 Thin CLI wrapper: loads config, applies `--force-redesign`, runs `RankingPipeline(...).run()`.
@@ -270,9 +280,9 @@ exercised in production.
    design instead of getting stuck with a generic schema).
 3. `_load_or_build_scoring_policy()` — cached at `ranking_scoring_policy.json` (always cached, no
    fallback concept here).
-4. Scores candidates in batches (`ranking.batch_size`, default 50) via
+4. Reports `0 / total`, then scores candidates in batches (`ranking.batch_size`, default 50) via
    `ThreadPoolExecutor(max_workers=ranking.max_workers)`: `CandidateScorerAgent.score_candidate()`
-   → `ManualGrader.grade()`.
+   → `ManualGrader.grade()`. Each completed score updates live progress.
 5. Re-sorts by original index (restore determinism after thread completion order), then by
    `(manual_score, exa_score)` descending, assigns `rank`.
 6. Writes `ranked_results.json` + `ranking_summary.json` (tier counts + top 10).

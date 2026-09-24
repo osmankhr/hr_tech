@@ -1,7 +1,7 @@
 # `web/backend/` — FastAPI Backend
 
 > Living reference doc. Update this file (not just memory) whenever routes/schema change.
-> Last generated: 2026-09-09.
+> Last updated: 2026-09-24.
 
 ## 1. What this is
 
@@ -140,8 +140,8 @@ and recreates the DB file), extended idempotently by `migrate_auth_audit.py` /
 | POST | `/api/candidates/{id}/comments` | user | add comment (optional `parent_id`) + audit event |
 | GET | `/api/skills` | user | distinct skill names |
 | POST | `/api/campaigns/{id}/pipeline/setup` | user (owner/admin) | create `candidate_pool` campaign folder (`campaign.yaml` + `input/*.md`), upsert `pipeline_campaign_configs` |
-| GET | `/api/campaigns/{id}/pipeline/runs` | user (owner/admin) | list `pipeline_runs` (marks stale runs failed first) |
-| GET | `/api/campaigns/{id}/pipeline/events` | user (header **or** `?token=`) | **SSE** stream, latest run status every 2s |
+| GET | `/api/campaigns/{id}/pipeline/runs` | user (owner/admin) | list `pipeline_runs`; an active run includes transient `progress` read from its campaign directory |
+| GET | `/api/campaigns/{id}/pipeline/events` | user (header **or** `?token=`) | **SSE** stream, emitting when either the latest DB run or its filesystem progress changes |
 | POST | `/api/campaigns/{id}/pipeline/run` | user (owner/admin) | kick off `run_campaign.py` subprocess in a background thread |
 | POST | `/api/campaigns/{id}/pipeline/import-ranked` | user (owner/admin) | import `ranked_results.json` into `candidates`/`campaign_candidates`/`candidate_rankings` |
 | GET/PUT | `/api/campaigns/{id}/pipeline/queries` | user (owner/admin) | read/overwrite `generated_queries.yaml` |
@@ -162,7 +162,11 @@ and recreates the DB file), extended idempotently by `migrate_auth_audit.py` /
   optional `max_candidates` (1–100). 409 if a run is already `Running` for that campaign. See §6 for
   the flag mapping.
 - `stream_pipeline_events`: accepts token via header **or** `?token=` query param (needed because
-  `EventSource` can't set custom headers). Emits `pipeline_run_update` / `heartbeat` events every 2s.
+  `EventSource` can't set custom headers). Every 2s it combines the latest DB run with a safe,
+  normalized read of `data/pipeline_status.json`; changes to phase/count/detail emit
+  `pipeline_run_update`, otherwise it emits a `heartbeat`. Missing, malformed, older-than-run,
+  more-than-five-minutes stale, unreasonably future-dated, oversized, non-regular, symlinked, or
+  outside-campaign-root status files/directories are ignored.
 - `import_ranked_results`: upserts `candidates` (matched by `profile_url` then `email`),
   `campaign_candidates`, `candidate_rankings` — all in one transaction, rolls back + marks
   `pipeline_runs.status='Failed'` on exception.
@@ -192,7 +196,14 @@ and recreates the DB file), extended idempotently by `migrate_auth_audit.py` /
   Full command: `[python_bin, "scripts/run_campaign.py", str(pipeline_dir), *flags]`, `cwd=CANDIDATE_POOL_ROOT`.
 - **Execution model**: `subprocess.run(...)` (blocking) inside a **daemon thread**, not
   `Popen`+poll, not a real job queue. `_mark_stale_running_runs` auto-fails any `Running` row older
-  than 30 minutes (guards against orphaned threads from dev-server reloads/restarts).
+  than 30 minutes (guards against orphaned threads from dev-server reloads/restarts). New runs are
+  reserved through `pipeline_runs.py` using `BEGIN IMMEDIATE`, so concurrent requests cannot both
+  create a `Running` row and launch competing subprocesses for the same campaign.
+- **Live progress channel**: the subprocess atomically writes `data/pipeline_status.json` with its
+  active phase and optional counters. `pipeline_progress.py` validates the campaign path, payload,
+  and timestamp before attaching it to API/SSE run objects. The backend clears stale progress before
+  a new run and again after the subprocess exits; no schema migration is required because progress
+  remains transient.
 - **Staged artifact endpoints** let the frontend inspect/edit intermediate state without running the
   whole pipeline (queries editor, search/filtered previews, stage-readiness, CSV/Excel exports).
 

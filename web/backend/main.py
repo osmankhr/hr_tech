@@ -26,6 +26,8 @@ from auth_utils import (
     utc_now,
     PASSWORD_ITERATIONS,
 )
+from pipeline_progress import attach_pipeline_progress, clear_pipeline_progress
+from pipeline_runs import PipelineRunAlreadyRunning, reserve_pipeline_run
 
 BACKEND_DIR = Path(__file__).resolve().parent
 DB_PATH = BACKEND_DIR / "hr_candidate_search_demo.db"
@@ -633,6 +635,7 @@ def _remove_pipeline_campaign_dir(pipeline_dir: Optional[str]):
 
 def _run_pipeline_in_background(run_id: int, command, cwd: Path):
     conn = get_connection()
+    run_row = None
     try:
         run_row = conn.execute(
             "SELECT campaign_dir FROM pipeline_runs WHERE id = ?",
@@ -714,6 +717,11 @@ def _run_pipeline_in_background(run_id: int, command, cwd: Path):
             (utc_now(), str(exc)[:4000], run_id),
         )
     finally:
+        if run_row and run_row["campaign_dir"]:
+            clear_pipeline_progress(
+                run_row["campaign_dir"],
+                campaigns_root=CANDIDATE_POOL_CAMPAIGNS_DIR,
+            )
         conn.commit()
         conn.close()
 
@@ -1223,7 +1231,13 @@ def list_pipeline_runs(campaign_id: int, current_user=Depends(get_current_user))
     """, (campaign_id,)).fetchall()
     conn.close()
 
-    return [dict(row) for row in rows]
+    return [
+        attach_pipeline_progress(
+            dict(row),
+            campaigns_root=CANDIDATE_POOL_CAMPAIGNS_DIR,
+        )
+        for row in rows
+    ]
 
 
 @app.get("/api/campaigns/{campaign_id}/pipeline/events")
@@ -1277,7 +1291,14 @@ def stream_pipeline_events(
             ).fetchone()
             conn.close()
 
-            latest_run = dict(row) if row else None
+            latest_run = (
+                attach_pipeline_progress(
+                    dict(row),
+                    campaigns_root=CANDIDATE_POOL_CAMPAIGNS_DIR,
+                )
+                if row
+                else None
+            )
             signature = json.dumps(latest_run, sort_keys=True, default=str)
 
             if signature != last_signature:
@@ -1350,21 +1371,6 @@ def run_pipeline(
         conn.close()
         raise HTTPException(status_code=404, detail="Pipeline directory not found")
 
-    running_row = conn.execute(
-        """
-        SELECT id
-        FROM pipeline_runs
-        WHERE campaign_id = ? AND status = 'Running'
-        ORDER BY started_at DESC
-        LIMIT 1
-        """,
-        (campaign_id,),
-    ).fetchone()
-
-    if running_row:
-        conn.close()
-        raise HTTPException(status_code=409, detail="A pipeline run is already in progress")
-
     preferred_venv_python = CANDIDATE_POOL_ROOT / ".venv" / "bin" / "python"
     python_bin = os.getenv("CANDIDATE_POOL_PYTHON")
     if not python_bin:
@@ -1393,32 +1399,31 @@ def run_pipeline(
         ]
 
     now = utc_now()
-    cur = conn.execute(
-        """
-        INSERT INTO pipeline_runs (
-            campaign_id,
-            run_type,
-            status,
-            command,
-            campaign_dir,
-            artifact_path,
-            started_at,
-            created_by_user_id
+    command_text = " ".join(command)
+    try:
+        run_id = reserve_pipeline_run(
+            conn,
+            campaign_id=campaign_id,
+            run_type=run_type,
+            command=command_text,
+            campaign_dir=str(pipeline_dir),
+            artifact_path=str(pipeline_dir / "data" / "ranked_results.json"),
+            started_at=now,
+            created_by_user_id=current_user["id"],
         )
-        VALUES (?, ?, 'Running', ?, ?, ?, ?, ?)
-        """,
-        (
-            campaign_id,
-            run_type,
-            " ".join(command),
-            str(pipeline_dir),
-            str(pipeline_dir / "data" / "ranked_results.json"),
-            now,
-            current_user["id"],
-        ),
+    except PipelineRunAlreadyRunning:
+        conn.close()
+        raise HTTPException(status_code=409, detail="A pipeline run is already in progress")
+    except Exception:
+        conn.close()
+        raise
+
+    # The reservation above is atomic. Only the request that owns the new Running row may clear
+    # an abandoned status file and launch a subprocess for this campaign.
+    clear_pipeline_progress(
+        pipeline_dir,
+        campaigns_root=CANDIDATE_POOL_CAMPAIGNS_DIR,
     )
-    run_id = cur.lastrowid
-    conn.commit()
     conn.close()
 
     thread = threading.Thread(
@@ -1432,7 +1437,7 @@ def run_pipeline(
         "success": True,
         "run_id": run_id,
         "status": "Running",
-        "command": " ".join(command),
+        "command": command_text,
     }
 
 

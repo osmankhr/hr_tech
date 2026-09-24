@@ -47,6 +47,7 @@ def write(
     *,
     current: int | None = None,
     total: int | None = None,
+    found: int | None = None,
     detail: str | None = None,
     phases: list[str] | None = None,
 ) -> None:
@@ -64,6 +65,8 @@ def write(
         payload["current"] = int(current)
     if total is not None:
         payload["total"] = int(total)
+    if found is not None:
+        payload["found"] = int(found)
     if detail:
         payload["detail"] = detail
     if _planned_phases:
