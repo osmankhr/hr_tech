@@ -4,14 +4,120 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import logging
+import os
 import re
+import threading
 from pathlib import Path
 from typing import Any
 
 import pipeline_status
 from llm_provider import call_model_text
+from typesafe_client import ask_choice, ask_noul, ask_score
 
 logger = logging.getLogger(__name__)
+
+# PENDING is correct for production: a failed review still needs a human look before a real
+# candidate gets dropped. Set to "reject" for fast local iteration (e.g. testing against a
+# flaky/rate-limited local model) where auto-rejecting failed calls is a bigger productivity win
+# than the false rejections it introduces. Never set to "reject" on the deployed server.
+_FAIL_MODE = os.environ.get("CANDIDATE_POOL_FAIL_MODE", "pending").strip().lower()
+if _FAIL_MODE not in {"pending", "reject"}:
+    logger.warning("Unknown CANDIDATE_POOL_FAIL_MODE=%r; defaulting to 'pending'", _FAIL_MODE)
+    _FAIL_MODE = "pending"
+
+# Set to disable the TypeSafe/Jev ING-employer check and revert to the original
+# regex-on-Claude's-extraction-only behavior -- e.g. if TypeSafe has an outage/incident, or the
+# key gets revoked, or its judgment ever looks wrong on a real campaign. Validated 2026-09-19
+# against a real campaign's ING-employer decisions: 33/33 agreement (see
+# typesafe_pilot_ing_check.py). Even when enabled, any single failed TypeSafe call falls back to
+# the regex check automatically -- this flag is for turning it off entirely, not per-call retry.
+_TYPESAFE_ING_CHECK_DISABLED = os.environ.get(
+    "CANDIDATE_POOL_DISABLE_TYPESAFE_ING_CHECK", ""
+).strip().lower() in {"1", "true", "yes"}
+
+_ING_CHECK_INSTRUCTIONS = (
+    "Is this candidate CURRENTLY employed at ING or a clear ING entity (e.g. 'ING Bank', "
+    "'ING Hubs', 'ING Hubs Türkiye/Turkey', 'ING Groep', 'ING Direct', or any other obvious "
+    "ING subsidiary/brand)? Answer no for companies that merely contain the letters 'ing' as "
+    "part of an unrelated word or name (e.g. Consulting, Engineering, Marketing, Wingie, Turing)."
+)
+
+# Set to disable the TypeSafe/Jev english_confidence rating and always use Claude's own rating
+# instead. Validated 2026-09-19 against every MEDIUM example in the system plus a HIGH sample
+# (42 candidates pooled across all campaigns) through three prompt iterations -- see
+# typesafe_pilot_english_confidence.py: 81% agreement (90% on HIGH, 73% on MEDIUM), the best of
+# three tries. english_confidence is a soft display signal only (never affects
+# ACCEPT/REJECT/PENDING), so this bar is intentionally lower than the ING check's. Any single
+# failed TypeSafe call falls back to Claude's own rating automatically -- this flag is for
+# turning it off entirely, not per-call retry.
+_TYPESAFE_ENGLISH_CHECK_DISABLED = os.environ.get(
+    "CANDIDATE_POOL_DISABLE_TYPESAFE_ENGLISH_CHECK", ""
+).strip().lower() in {"1", "true", "yes"}
+
+_ENGLISH_CONFIDENCE_LEVELS = ["LOW", "MEDIUM", "HIGH"]
+_ENGLISH_CONFIDENCE_CRITERIA = [
+    "LOW: profile is entirely in another language with no English or international signals at all.",
+    "MEDIUM: the 'About' section (or equivalent) is short, telegraphic, or keyword/bullet-list style "
+    "-- e.g. a string of job titles, tech keywords, or sentence fragments -- even if grammatically "
+    "fine. This is extremely common on LinkedIn regardless of true fluency (many people write "
+    "minimal, list-style summaries), so it's weak evidence on its own. Also default here whenever "
+    "signals are mixed, weak, or you're genuinely unsure.",
+    "HIGH: either (a) multiple complete, well-constructed English sentences forming actual flowing "
+    "prose -- not just a title/keyword list -- that demonstrate real command of the language on "
+    "their own, even without external credentials; or (b) an explicit English proficiency/"
+    "certification claim (IELTS/TOEFL, 'fluent in English'); or (c) concrete international study/"
+    "work history (foreign university, employer headquartered abroad, international team).",
+]
+_ENGLISH_CONFIDENCE_INSTRUCTIONS = (
+    "Rate how confident you are that this candidate is proficient in English, based on the "
+    "profile below. A short list of job titles and keywords is not enough on its own -- look for "
+    "actual flowing prose, an explicit fluency/certification claim, or international history."
+)
+
+# Opt-in, unlike the two flags above -- this one defaults OFF. Validated 2026-09-19 across three
+# prompt iterations against 35-36 candidates (data-ai-chapter-lead-engineer_20260826_070714, all
+# three ACCEPT/REJECT/PENDING outcomes): best result was 81% agreement with REJECT at 100%, but
+# ACCEPT dropped to 67% as a direct tradeoff -- Claude gives some candidates credit for *leading*
+# ML initiatives without hands-on coding, a nuance this prompt deliberately excludes to avoid
+# false ACCEPTs, and that tradeoff didn't resolve cleanly after three tries (see
+# typesafe_pilot_recommendation.py for the full history). Given this drives the actual
+# ACCEPT/REJECT/PENDING decision -- the highest-stakes of the three checks -- production stays on
+# Claude alone unless this is explicitly turned on for further testing.
+_TYPESAFE_RECOMMENDATION_ENABLED = os.environ.get(
+    "CANDIDATE_POOL_ENABLE_TYPESAFE_RECOMMENDATION", ""
+).strip().lower() in {"1", "true", "yes"}
+
+_RECOMMENDATION_INSTRUCTIONS = (
+    "Decide whether this candidate should be accepted, rejected, or marked pending for the role "
+    "described in the filtering criteria, based on the candidate profile. Both are given in the "
+    "state. If the criteria include a location requirement, treat it as a hard requirement: only "
+    "choose ACCEPT when the candidate's real location clearly and unambiguously satisfies it. "
+    "Watch specifically for CONFLICTING location signals -- e.g. a profile header naming one city "
+    "while the current employer and recent role history are all listed in a different city or "
+    "country. That conflict means the real current location cannot be determined, even though "
+    "the profile mentions a location -- choose PENDING in that case, not a guess at which signal "
+    "to trust. Only choose REJECT when the location is clearly and consistently stated and it "
+    "does not satisfy the requirement. Never resolve a genuine conflict by picking a side. "
+    "\n\nWhen a criterion asks for a 'strong background' or 'foundation' in a specific technical "
+    "discipline (e.g. ML, not just adjacent/supporting work), read it strictly: working with data "
+    "pipelines, ETL, data platforms/warehousing, or applying a pre-built GenAI/RAG/LLM tool as an "
+    "end user does NOT by itself demonstrate a strong foundation in that discipline. Look "
+    "specifically for hands-on model building, training, evaluation, or algorithm design/research "
+    "experience in that discipline. A candidate whose real substance is adjacent-but-different "
+    "work should be REJECTed for that criterion, not ACCEPTed on the assumption that adjacent "
+    "experience is close enough."
+)
+_RECOMMENDATION_CRITERIA = {
+    "ACCEPT": "Candidate satisfies the Accept criteria and any hard requirements are clearly, "
+    "unambiguously met -- no conflicting signals about them.",
+    "REJECT": "Candidate clearly and consistently fails a hard requirement (no conflicting signals "
+    "about it), or matches a Reject condition in the criteria.",
+    "PENDING": "A hard requirement can't be determined from the profile text, OR there are "
+    "conflicting signals about it (e.g. the profile header states one location but the person's "
+    "actual employer/role history points to a different one) -- don't guess which signal to "
+    "trust, mark it PENDING. Also use this when there isn't enough information to confidently "
+    "decide either way on a non-hard-requirement criterion.",
+}
 
 _SYSTEM_INSTRUCTIONS = """\
 You are a recruitment assistant. Review the candidate profile against the provided \
@@ -139,6 +245,44 @@ class CandidateFilter:
             "text_excerpt": (candidate.get("text") or "")[:3000],
         }
 
+        # None of the TypeSafe checks depend on Claude's answer -- they're independent judgments
+        # on the same summary -- so start them in background threads now and join them after the
+        # Claude call below, instead of waiting until Claude returns to even begin. Claude's call
+        # takes 7-16s; each TypeSafe call takes ~700ms, so this hides their latency entirely
+        # rather than adding it on top.
+        typesafe_results: dict[str, Any] = {}
+
+        def _run_typesafe(key: str, fn, *args) -> None:
+            typesafe_results[key] = fn(*args)
+
+        typesafe_threads: list[threading.Thread] = []
+        if not _TYPESAFE_ENGLISH_CHECK_DISABLED:
+            t = threading.Thread(
+                target=_run_typesafe,
+                args=("english_idx", ask_score, summary, _ENGLISH_CONFIDENCE_INSTRUCTIONS, _ENGLISH_CONFIDENCE_CRITERIA),
+            )
+            t.start()
+            typesafe_threads.append(t)
+        if _TYPESAFE_RECOMMENDATION_ENABLED:
+            t = threading.Thread(
+                target=_run_typesafe,
+                args=(
+                    "recommendation_choice",
+                    ask_choice,
+                    {"filtering_criteria": self.criteria, "candidate_profile": summary},
+                    _RECOMMENDATION_INSTRUCTIONS,
+                    _RECOMMENDATION_CRITERIA,
+                ),
+            )
+            t.start()
+            typesafe_threads.append(t)
+        if not _TYPESAFE_ING_CHECK_DISABLED:
+            t = threading.Thread(
+                target=_run_typesafe, args=("ing_noul", ask_noul, summary, _ING_CHECK_INSTRUCTIONS)
+            )
+            t.start()
+            typesafe_threads.append(t)
+
         prompt = _PROMPT_TEMPLATE.format(
             criteria=self.criteria,
             candidate_json=json.dumps(summary, indent=2, ensure_ascii=False),
@@ -146,11 +290,13 @@ class CandidateFilter:
 
         review = self._call_model(prompt)
         if review is None:
-            # REJECT rather than PENDING: a handful of calls per run die on timeout, and a
-            # PENDING stub would push every one of them into the recruiter's manual queue with
-            # no evidence attached. Losing an unreviewed candidate costs less than that.
+            recommendation = "REJECT" if _FAIL_MODE == "reject" else "PENDING"
+            main_concern = (
+                "AI review failed — rejected unreviewed" if _FAIL_MODE == "reject"
+                else "AI review failed — manual review required"
+            )
             review = {
-                "recommendation": "REJECT",
+                "recommendation": recommendation,
                 "confidence": "LOW",
                 "candidate_location": None,
                 "candidate_job_title": None,
@@ -158,9 +304,15 @@ class CandidateFilter:
                 "english_confidence": "MEDIUM",
                 "english_confidence_reason": None,
                 "key_strength": None,
-                "main_concern": "AI review failed — rejected unreviewed",
+                "main_concern": main_concern,
                 "reasoning": "Model call failed or returned unparseable output.",
             }
+
+        # Join the TypeSafe threads kicked off before the Claude call above -- each one has been
+        # running in the background for however long Claude's call just took (~7-16s vs. their
+        # ~700ms each), so these joins normally return immediately with no added wait.
+        for t in typesafe_threads:
+            t.join()
 
         extracted_location = review.get("candidate_location")
         extracted_title = review.get("candidate_job_title")
@@ -169,13 +321,40 @@ class CandidateFilter:
         if english_confidence not in {"LOW", "MEDIUM", "HIGH"}:
             english_confidence = "MEDIUM"
 
-        # Deterministic backstop: even if the model's own reasoning missed the standing
-        # ING-exclusion rule above, don't let a current ING employee through as ACCEPT/PENDING.
-        if _is_ing_employer(extracted_employer) and review.get("recommendation") != "REJECT":
+        # english_confidence rating: TypeSafe's answer (fetched above) wins when available.
+        # Falls back to Claude's own rating (computed above) if TypeSafe is disabled or the call
+        # failed for any reason -- never blocks on TypeSafe.
+        level_idx = typesafe_results.get("english_idx")
+        if level_idx is not None:
+            english_confidence = _ENGLISH_CONFIDENCE_LEVELS[level_idx]
+
+        # ACCEPT/REJECT/PENDING recommendation: opt-in only (see _TYPESAFE_RECOMMENDATION_ENABLED
+        # above for why) -- disabled by default, so this block is a no-op in production until
+        # explicitly turned on. When enabled, a successful TypeSafe call replaces Claude's
+        # recommendation entirely; a failed call leaves Claude's recommendation untouched. The
+        # ING-employer backstop below still applies on top regardless of which one decided.
+        if _TYPESAFE_RECOMMENDATION_ENABLED:
+            choice = typesafe_results.get("recommendation_choice")
+            if choice in {"ACCEPT", "REJECT", "PENDING"}:
+                review = {**review, "recommendation": choice}
+
+        # ING-employer check: TypeSafe's answer (fetched above) wins when available -- it judged
+        # the same profile summary Claude saw directly, not just a regex over Claude's own
+        # extraction, so a candidate Claude mis-extracted or never flagged still gets caught.
+        # Falls back to the original regex-on-extraction check if TypeSafe is disabled or the
+        # call failed for any reason -- never blocks on TypeSafe.
+        is_ing = None
+        noul = typesafe_results.get("ing_noul")
+        if noul is not None:
+            is_ing = noul >= 0.5
+        if is_ing is None:
+            is_ing = _is_ing_employer(extracted_employer)
+
+        if is_ing and review.get("recommendation") != "REJECT":
             review = {
                 **review,
                 "recommendation": "REJECT",
-                "main_concern": f"Candidate's current employer ({extracted_employer}) appears to be ING.",
+                "main_concern": f"Candidate's current employer ({extracted_employer or 'unknown'}) appears to be ING.",
             }
 
         return {

@@ -53,6 +53,7 @@ except ImportError as e:
     raise SystemExit("beautifulsoup4 is required. Install with: pip install beautifulsoup4") from e
 
 from utils import match_university, data_dir, today_str, last_run_date
+from relevance_filter import classify_new_authors
 
 
 # ---------------------------------------------------------------------------
@@ -497,14 +498,13 @@ def _seen_author_keys(prev_files: list[str]) -> set[tuple[str, str]]:
     return seen
 
 
-def save_new_authors(theses: list[Thesis], prev_files: list[str], path: str) -> None:
+def build_new_author_groups(theses: list[Thesis], prev_files: list[str]) -> list[dict]:
     """
-    Diff current theses against all past runs. Output one row per unique
+    Diff current theses against all past runs. Return one dict per unique
     (author, university) pair that is new, sorted by university then author.
     """
     seen = _seen_author_keys(prev_files)
 
-    # Group theses by (author, university), keeping only new pairs
     groups: dict[tuple[str, str], dict] = {}
     for t in theses:
         key = (t.author.strip().lower(), t.university)
@@ -527,8 +527,10 @@ def save_new_authors(theses: list[Thesis], prev_files: list[str], path: str) -> 
         g["tez_nos"].append(t.tez_no)
         g["titles"].append(t.title[:80])
 
-    rows = sorted(groups.values(), key=lambda g: (g["university"], g["author"]))
+    return sorted(groups.values(), key=lambda g: (g["university"], g["author"]))
 
+
+def write_author_groups(rows: list[dict], path: str) -> None:
     fns = ["author", "university", "thesis_count", "years", "thesis_types", "tez_nos", "titles"]
     with open(path, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=fns)
@@ -543,7 +545,6 @@ def save_new_authors(theses: list[Thesis], prev_files: list[str], path: str) -> 
                 "tez_nos": " | ".join(g["tez_nos"]),
                 "titles": " || ".join(g["titles"]),
             })
-    print(f"New authors (not in prior runs): {len(rows)} -> {path}")
 
 
 # ---------------------------------------------------------------------------
@@ -651,8 +652,22 @@ def run(year_start: int, year_end: int, out_dir: str, enrich: bool,
               f"{[os.path.basename(p) for p in sorted(prev_files)]}")
     else:
         print("\nNo previous runs found — new_authors CSV will contain all authors.")
+    groups = build_new_author_groups(combined, prev_files)
+
+    print(f"\nRelevance-filtering {len(groups)} new author(s) with Claude "
+          f"(rejects domain theses that merely use AI, e.g. biology/education) ...")
+    decisions = classify_new_authors(groups)
+    kept = [g for i, g in enumerate(groups) if decisions.get(i, True)]
+    rejected = [g for i, g in enumerate(groups) if not decisions.get(i, True)]
+
     new_authors_path = os.path.join(out_dir, f"new_authors_{today_str()}.csv")
-    save_new_authors(combined, prev_files, new_authors_path)
+    write_author_groups(kept, new_authors_path)
+    print(f"New authors (not in prior runs, ML/DS-relevant): {len(kept)} -> {new_authors_path}")
+
+    if rejected:
+        rejected_path = os.path.join(out_dir, f"new_authors_rejected_{today_str()}.csv")
+        write_author_groups(rejected, rejected_path)
+        print(f"New authors filtered out as off-topic: {len(rejected)} -> {rejected_path}")
 
     print(f"\nResults:")
     print(f"   new theses : {len(all_new)}")
