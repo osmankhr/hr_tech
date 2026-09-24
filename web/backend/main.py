@@ -2389,7 +2389,7 @@ def create_campaign(
     location: str = Form(...),
     position_name: str = Form(...),
     experience: str = Form(...),
-    desired_skills: str = Form(...),
+    desired_skills: str = Form(""),
     target_profiles: int = Form(25),
     sample_cv: Optional[UploadFile] = File(None),
     current_user=Depends(get_current_user)
@@ -2557,7 +2557,7 @@ def update_campaign(
     location: str = Form(...),
     position_name: str = Form(...),
     experience: str = Form(...),
-    desired_skills: str = Form(...),
+    desired_skills: str = Form(""),
     target_profiles: int = Form(25),
     status: str = Form("Active"),
     sample_cv: Optional[UploadFile] = File(None),
