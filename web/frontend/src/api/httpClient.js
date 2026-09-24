@@ -18,17 +18,36 @@ async function request(path, options = {}) {
   });
 
   if (!response.ok) {
-    let message = "Request failed";
+  let message = `Request failed (${response.status})`;
 
-    try {
-      const errorBody = await response.json();
-      message = errorBody.detail || errorBody.message || message;
-    } catch {
-      message = response.statusText || message;
+  try {
+    const errorBody = await response.json();
+
+    if (Array.isArray(errorBody.detail)) {
+      message = errorBody.detail
+        .map((error) => {
+          const field = error.loc?.slice(1).join(".") || "request";
+          return `${field}: ${error.msg}`;
+        })
+        .join("\n");
+    } else {
+      message =
+        errorBody.detail ||
+        errorBody.message ||
+        message;
     }
 
-    throw new Error(message);
+    console.error("API request failed:", {
+      status: response.status,
+      path,
+      response: errorBody,
+    });
+  } catch {
+    message = response.statusText || message;
   }
+
+  throw new Error(message);
+}
 
   return response.json();
 }
