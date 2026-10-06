@@ -27,7 +27,7 @@ COPILOT_FIXED_MODEL = "openai/gpt-5.3-codex"
 # cheapest current ChatGPT-login model; override with CANDIDATE_POOL_CODEX_MODEL if needed.
 CODEX_MODEL = os.environ.get("CANDIDATE_POOL_CODEX_MODEL", "gpt-5.6-luna").strip() or None
 
-VALID_PROVIDERS = {"claude", "copilot", "codex"}
+VALID_PROVIDERS = {"openrouter", "claude", "copilot", "codex"}
 
 # Claude CLI profile fallback chain. Each profile is an isolated $HOME under
 # n8n-data/claude-profiles/<name>/ (same profiles the n8n workflows use), each
@@ -151,10 +151,11 @@ def _env_user_set(var_name: str, default: str) -> set[str]:
 
 
 def choose_provider() -> str:
-    """Return one of: claude, copilot, codex.
+    """Return one of: openrouter, claude, copilot, codex.
 
-    Claude is the default because that's what the deployed server is set up for; a developer's
-    own machine is detected by account name and routed to their local CLI instead.
+    If OPENROUTER_API_KEY is configured (or CANDIDATE_POOL_LLM_PROVIDER=openrouter),
+    OpenRouter is used to route Claude calls. Otherwise, falls back to developer account
+    detection or Claude CLI profiles.
     """
     mode = os.environ.get("CANDIDATE_POOL_LLM_PROVIDER", "auto").strip().lower()
     if mode in VALID_PROVIDERS:
@@ -165,6 +166,10 @@ def choose_provider() -> str:
             "Unknown CANDIDATE_POOL_LLM_PROVIDER=%r, falling back to auto",
             mode,
         )
+
+    # Prefer OpenRouter when API key is present
+    if os.environ.get("OPENROUTER_API_KEY"):
+        return "openrouter"
 
     identities = _detect_local_identities()
 
@@ -189,6 +194,47 @@ def call_model_text(*, prompt: str, model: str, system: str | None, timeout: int
     as "this one candidate failed" and keeps the batch going.
     """
     provider = choose_provider()
+
+    if provider == "openrouter":
+        try:
+            from llm_openrouter import OpenRouterClient  # type: ignore
+        except Exception:
+            logger.error(
+                "OpenRouter provider selected but llm_openrouter.OpenRouterClient is unavailable."
+            )
+            return None
+
+        started = time.monotonic()
+        try:
+            target_model = (
+                os.environ.get("OPENROUTER_MODEL")
+                or os.environ.get("CANDIDATE_POOL_OPENROUTER_MODEL")
+                or model
+            )
+            client = OpenRouterClient(model=target_model, timeout=timeout)
+            text = client.complete(system=system, user=prompt)
+        except ValueError as e:
+            logger.error("OpenRouter config error: %s", e)
+            with _usage_lock:
+                _usage_totals["errors"] += 1
+            return None
+        except Exception:
+            logger.exception("OpenRouter call failed")
+            with _usage_lock:
+                _usage_totals["errors"] += 1
+            return None
+
+        usage = client.last_usage or {}
+        _record_usage({
+            "usage": {
+                "input_tokens": usage.get("prompt_tokens", 0),
+                "output_tokens": usage.get("completion_tokens", 0),
+                "cache_creation_input_tokens": usage.get("cached_tokens", 0),
+            },
+            "total_cost_usd": usage.get("total_cost", 0.0),
+            "duration_ms": int((time.monotonic() - started) * 1000),
+        })
+        return text
 
     if provider == "codex":
         try:
