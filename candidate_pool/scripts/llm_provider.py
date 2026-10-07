@@ -45,6 +45,22 @@ CLAUDE_PROFILE_CHAIN = tuple(
     if part.strip()
 )
 
+# A profile whose login has expired fails every call, and each failed attempt burns ~6s before the
+# chain falls through to the next profile. Once a call fails with an auth-looking error, skip that
+# profile for a while instead of retrying it for every candidate in the run. Other failures
+# (timeouts, rate/usage limits, bad output) are not cooled down: they may be transient per call.
+_AUTH_COOLDOWN_SECONDS = 600
+_AUTH_ERROR_MARKERS = (
+    "failed to authenticate",
+    "oauth session expired",
+    "not logged in",
+    "please run /login",
+    "invalid api key",
+)
+_profile_cooldowns: dict[str, float] = {}
+_cooldown_lock = threading.Lock()
+
+
 # Cost/token usage was previously not captured at all -- `claude --print` was called without
 # --output-format json, so the CLI's cost/usage data was thrown away, not just unlogged. This
 # accumulates it across every Claude CLI call in a pipeline run (filter.py, generate_queries.py,
@@ -254,7 +270,7 @@ def call_model_text(*, prompt: str, model: str, system: str | None, timeout: int
     if system:
         cmd += ["--system-prompt", system]
 
-    profiles = CLAUDE_PROFILE_CHAIN or (None,)
+    profiles = _active_profiles(CLAUDE_PROFILE_CHAIN or (None,))
     for i, profile in enumerate(profiles):
         is_last = i == len(profiles) - 1
         profile_home = CLAUDE_PROFILES_DIR / profile if profile else None
@@ -269,6 +285,53 @@ def call_model_text(*, prompt: str, model: str, system: str | None, timeout: int
             "claude profile %r failed, falling back to next profile in chain", profile
         )
     return None
+
+
+def _active_profiles(profiles: tuple[str | None, ...]) -> tuple[str | None, ...]:
+    """Drop profiles currently cooling down after an auth failure.
+
+    If every profile is cooling down, return the full chain unchanged so a call still gets tried
+    (e.g. someone just re-ran `claude login` and the cooldown hasn't expired yet).
+    """
+    now = time.monotonic()
+    with _cooldown_lock:
+        live = tuple(p for p in profiles if _profile_cooldowns.get(p or "", 0.0) <= now)
+    return live or profiles
+
+
+def _cli_error_text(result: subprocess.CompletedProcess) -> str:
+    """Best available error text from a failed `claude --print --output-format json` run.
+
+    The CLI reports failures as a JSON payload on *stdout* (is_error/result) and usually leaves
+    stderr empty, so logging stderr alone produced blank warnings.
+    """
+    try:
+        payload = json.loads(result.stdout)
+        if isinstance(payload, dict) and payload.get("result"):
+            return str(payload["result"])
+    except (json.JSONDecodeError, TypeError):
+        pass
+    return (result.stderr or result.stdout or "").strip()
+
+
+def _note_cli_failure(profile_label: str | None, error_text: str) -> None:
+    """Count the error and cool the profile down if the failure looks like an expired login."""
+    with _usage_lock:
+        _usage_totals["errors"] += 1
+    lowered = error_text.lower()
+    if profile_label and any(marker in lowered for marker in _AUTH_ERROR_MARKERS):
+        with _cooldown_lock:
+            already = _profile_cooldowns.get(profile_label, 0.0) > time.monotonic()
+            _profile_cooldowns[profile_label] = time.monotonic() + _AUTH_COOLDOWN_SECONDS
+        if not already:
+            logger.error(
+                "claude profile %r looks logged out (%s); skipping it for %d min. "
+                "Re-run `claude login` with HOME=%s",
+                profile_label,
+                error_text[:120],
+                _AUTH_COOLDOWN_SECONDS // 60,
+                CLAUDE_PROFILES_DIR / profile_label,
+            )
 
 
 def _call_claude_cli(
@@ -304,11 +367,11 @@ def _call_claude_cli(
         return None, True
 
     if result.returncode != 0:
+        error_text = _cli_error_text(result)
         logger.warning(
-            "claude CLI returned non-zero (profile=%s): %s", profile_label, result.stderr[:200]
+            "claude CLI returned non-zero (profile=%s): %s", profile_label, error_text[:300]
         )
-        with _usage_lock:
-            _usage_totals["errors"] += 1
+        _note_cli_failure(profile_label, error_text)
         return None, True
 
     try:
@@ -320,13 +383,11 @@ def _call_claude_cli(
         return result.stdout, False
 
     if payload.get("is_error"):
+        error_text = str(payload.get("result"))
         logger.warning(
-            "claude CLI reported an error result (profile=%s): %s",
-            profile_label,
-            str(payload.get("result"))[:200],
+            "claude CLI reported an error result (profile=%s): %s", profile_label, error_text[:300]
         )
-        with _usage_lock:
-            _usage_totals["errors"] += 1
+        _note_cli_failure(profile_label, error_text)
         return None, True
 
     _record_usage(payload)
