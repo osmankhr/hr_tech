@@ -198,11 +198,15 @@ def choose_provider() -> str:
     return "claude"
 
 
-def call_model_text(*, prompt: str, model: str, system: str | None, timeout: int) -> str | None:
+def call_model_text(
+    *, prompt: str, model: str, system: str | None, timeout: int, effort: str | None = None
+) -> str | None:
     """Call selected LLM provider and return raw text output.
 
     Never raises: every caller (filter.py, generate_queries.py, the ranking agents) treats None
     as "this one candidate failed" and keeps the batch going.
+
+    `effort` is passed to `claude --effort` (Claude CLI provider only; other providers ignore it).
     """
     provider = choose_provider()
 
@@ -269,6 +273,8 @@ def call_model_text(*, prompt: str, model: str, system: str | None, timeout: int
     cmd = ["claude", "--print", "--model", model, "--tools", "", "--output-format", "json"]
     if system:
         cmd += ["--system-prompt", system]
+    if effort:
+        cmd += ["--effort", effort]
 
     profiles = _active_profiles(CLAUDE_PROFILE_CHAIN or (None,))
     for i, profile in enumerate(profiles):

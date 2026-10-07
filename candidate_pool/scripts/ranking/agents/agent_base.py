@@ -17,13 +17,16 @@ class JsonAgent:
         self.model = model
         self.timeout = timeout
 
-    def call_json(self, *, system: str, user: str, retries: int = 1) -> dict[str, Any] | None:
+    def call_json(
+        self, *, system: str, user: str, retries: int = 1, effort: str | None = None
+    ) -> dict[str, Any] | None:
         for attempt in range(retries + 1):
             output = call_model_text(
                 prompt=user,
                 model=self.model,
                 system=system,
                 timeout=self.timeout,
+                effort=effort,
             )
             if output:
                 parsed = extract_first_json_object(output)
