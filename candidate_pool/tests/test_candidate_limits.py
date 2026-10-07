@@ -16,7 +16,7 @@ import ranking.pipeline as ranking_pipeline
 
 
 class CandidateLimitsTests(unittest.TestCase):
-    def test_filter_reviews_all_candidates_when_max_candidates_is_none(self):
+    def test_filter_reviews_all_candidates_only_when_max_candidates_is_explicitly_zero(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             campaign_dir = Path(temp_dir)
             input_dir = campaign_dir / "input"
@@ -31,7 +31,7 @@ class CandidateLimitsTests(unittest.TestCase):
             ]
             (data_dir / "raw_results.json").write_text(json.dumps(candidates), encoding="utf-8")
 
-            cf = candidate_filter.CandidateFilter(campaign_dir, {"filter": {"max_candidates": None, "max_workers": 1}})
+            cf = candidate_filter.CandidateFilter(campaign_dir, {"filter": {"max_candidates": 0, "max_workers": 1}})
             self.assertIsNone(cf.max_candidates)
 
             with patch.object(cf, "_review_candidate", return_value={"ai_review": {"recommendation": "ACCEPT"}}):
@@ -68,10 +68,20 @@ class CandidateLimitsTests(unittest.TestCase):
             self.assertEqual(accepted, 3)
             self.assertEqual(pending, 7)
 
-    def test_ranking_ranks_all_candidates_when_max_candidates_is_none(self):
+    def test_missing_max_candidates_uses_the_default_cap_not_unlimited(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             campaign_dir = Path(temp_dir)
+            (campaign_dir / "input").mkdir(parents=True, exist_ok=True)
+            (campaign_dir / "input" / "filter_criteria.md").write_text("Must know Python", encoding="utf-8")
+            cf = candidate_filter.CandidateFilter(campaign_dir, {"filter": {"max_candidates": None}})
+            self.assertEqual(cf.max_candidates, 100)
             rp = ranking_pipeline.RankingPipeline(campaign_dir, {"ranking": {"max_candidates": None}})
+            self.assertEqual(rp.max_candidates, 100)
+
+    def test_ranking_ranks_all_candidates_only_when_max_candidates_is_explicitly_zero(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            campaign_dir = Path(temp_dir)
+            rp = ranking_pipeline.RankingPipeline(campaign_dir, {"ranking": {"max_candidates": 0}})
             self.assertIsNone(rp.max_candidates)
 
 

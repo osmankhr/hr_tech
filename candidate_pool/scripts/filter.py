@@ -214,8 +214,8 @@ class CandidateFilter:
         self.config = config
         filter_cfg = config.get("filter", {})
         self.model = filter_cfg.get("model", "claude-sonnet-5")
-        raw_max = filter_cfg.get("max_candidates")
-        self.max_candidates = int(raw_max) if raw_max is not None and int(raw_max) > 0 else None
+        # Missing -> default cap (per location); 0 -> no cap (explicit opt-in). See prompt_trim.
+        self.max_candidates = prompt_trim.resolve_max_candidates(filter_cfg.get("max_candidates"))
         # Filter calls are I/O-bound (waiting on the model), so concurrency scales close to
         # linearly. This stage measured as ~60% of total pipeline wall-clock time on real
         # campaigns at the old default of 6 workers, while ranking (default ~50 workers) barely

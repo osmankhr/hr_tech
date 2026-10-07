@@ -14,6 +14,9 @@ Each switch can be turned off independently with an environment variable (set to
   CANDIDATE_POOL_TERSE_OUTPUT   append short length limits to the ranking scorer prompt
   CANDIDATE_POOL_CLAUDE_EFFORT  `claude --effort` level for per-candidate calls (default "low";
                                 set to "off" to use the CLI default). Claude CLI provider only.
+
+Candidate caps (how many candidates get reviewed/ranked) also live here, since they are the biggest
+cost lever: see resolve_max_candidates().
 """
 from __future__ import annotations
 
@@ -85,3 +88,23 @@ def dedupe_highlights(highlights: Any, text_excerpt: str) -> Any:
         if isinstance(h, str) and h.strip() and h[:60] not in text_excerpt
     ]
     return kept[:HIGHLIGHT_MAX_ITEMS]
+
+
+DEFAULT_MAX_CANDIDATES = 100
+
+
+def resolve_max_candidates(raw: Any) -> int | None:
+    """Turn a `max_candidates` config value into a cap, or None for "no cap".
+
+    * missing/None  -> the default cap (CANDIDATE_POOL_DEFAULT_MAX_CANDIDATES, default 100), so a
+                       campaign never silently reviews every candidate Exa returns
+    * 0 / negative  -> no cap; an explicit opt-in to review and rank everything
+    * N > 0         -> N
+    """
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        try:
+            return max(1, int(os.environ.get("CANDIDATE_POOL_DEFAULT_MAX_CANDIDATES", DEFAULT_MAX_CANDIDATES)))
+        except ValueError:
+            return DEFAULT_MAX_CANDIDATES
+    value = int(raw)
+    return value if value > 0 else None

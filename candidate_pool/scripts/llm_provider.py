@@ -75,6 +75,7 @@ _usage_totals: dict[str, Any] = {
     "cache_creation_input_tokens": 0,
     "cost_usd": 0.0,
     "duration_ms": 0,
+    "openrouter_fallback_calls": 0,
 }
 
 
@@ -89,6 +90,7 @@ def reset_usage_summary() -> None:
     with _usage_lock:
         for key in _usage_totals:
             _usage_totals[key] = 0 if not isinstance(_usage_totals[key], float) else 0.0
+        _openrouter_state.update(spent_usd=0.0, fallback_logged=False, budget_logged=False)
 
 
 def _record_usage(usage_json: dict[str, Any]) -> None:
@@ -169,9 +171,11 @@ def _env_user_set(var_name: str, default: str) -> set[str]:
 def choose_provider() -> str:
     """Return one of: openrouter, claude, copilot, codex.
 
-    If OPENROUTER_API_KEY is configured (or CANDIDATE_POOL_LLM_PROVIDER=openrouter),
-    OpenRouter is used to route Claude calls. Otherwise, falls back to developer account
-    detection or Claude CLI profiles.
+    OpenRouter is only the primary provider when explicitly forced with
+    CANDIDATE_POOL_LLM_PROVIDER=openrouter. With OPENROUTER_API_KEY set but no override it is just
+    the fallback behind the Claude CLI profiles (see call_model_text), because the CLI profiles are
+    flat-rate logins while OpenRouter bills per token. Otherwise a developer's own machine is
+    detected by account name and routed to their local CLI.
     """
     mode = os.environ.get("CANDIDATE_POOL_LLM_PROVIDER", "auto").strip().lower()
     if mode in VALID_PROVIDERS:
@@ -182,10 +186,6 @@ def choose_provider() -> str:
             "Unknown CANDIDATE_POOL_LLM_PROVIDER=%r, falling back to auto",
             mode,
         )
-
-    # Prefer OpenRouter when API key is present
-    if os.environ.get("OPENROUTER_API_KEY"):
-        return "openrouter"
 
     identities = _detect_local_identities()
 
@@ -203,6 +203,130 @@ def choose_provider() -> str:
     return "claude"
 
 
+# --- OpenRouter (pay-per-token) ------------------------------------------------------------------
+# Used either as the explicit primary provider, or as a safety net when every Claude CLI profile
+# fails (logged out, usage limit, ...), so a campaign degrades to "costs some dollars" instead of
+# "every candidate silently lands in PENDING". A per-run spend guard keeps a prolonged CLI outage
+# from turning into an unbounded bill.
+_OPENROUTER_DEFAULT_BUDGET_USD = 5.0
+_openrouter_state = {"spent_usd": 0.0, "fallback_logged": False, "budget_logged": False}
+
+
+def _openrouter_fallback_enabled() -> bool:
+    if os.environ.get("CANDIDATE_POOL_OPENROUTER_FALLBACK", "on").strip().lower() in {"0", "false", "off", "no"}:
+        return False
+    return bool((os.environ.get("OPENROUTER_API_KEY") or "").strip())
+
+
+def _openrouter_budget_usd() -> float | None:
+    """Max OpenRouter spend per process (one pipeline run). None = unlimited ("off")."""
+    raw = os.environ.get("CANDIDATE_POOL_OPENROUTER_MAX_USD", "").strip().lower()
+    if raw in {"off", "none", "unlimited"}:
+        return None
+    try:
+        return float(raw) if raw else _OPENROUTER_DEFAULT_BUDGET_USD
+    except ValueError:
+        return _OPENROUTER_DEFAULT_BUDGET_USD
+
+
+def _call_openrouter(*, prompt: str, model: str, system: str | None, timeout: int) -> str | None:
+    budget = _openrouter_budget_usd()
+    with _usage_lock:
+        over_budget = budget is not None and _openrouter_state["spent_usd"] >= budget
+        first_budget_log = over_budget and not _openrouter_state["budget_logged"]
+        if first_budget_log:
+            _openrouter_state["budget_logged"] = True
+        if over_budget:
+            _usage_totals["errors"] += 1
+    if over_budget:
+        if first_budget_log:
+            logger.error(
+                "OpenRouter spend guard: $%.2f spent this run (limit $%.2f, "
+                "CANDIDATE_POOL_OPENROUTER_MAX_USD); further OpenRouter calls are skipped.",
+                _openrouter_state["spent_usd"],
+                budget,
+            )
+        return None
+
+    try:
+        from llm_openrouter import OpenRouterClient  # type: ignore
+    except Exception:
+        logger.error("OpenRouter requested but llm_openrouter.OpenRouterClient is unavailable.")
+        return None
+
+    started = time.monotonic()
+    try:
+        target_model = (
+            os.environ.get("OPENROUTER_MODEL")
+            or os.environ.get("CANDIDATE_POOL_OPENROUTER_MODEL")
+            or model
+        )
+        client = OpenRouterClient(model=target_model, timeout=timeout)
+        text = client.complete(system=system, user=prompt)
+    except ValueError as e:
+        logger.error("OpenRouter config error: %s", e)
+        with _usage_lock:
+            _usage_totals["errors"] += 1
+        return None
+    except Exception:
+        logger.exception("OpenRouter call failed")
+        with _usage_lock:
+            _usage_totals["errors"] += 1
+        return None
+
+    usage = client.last_usage or {}
+    cost = float(usage.get("total_cost", 0.0) or 0.0)
+    with _usage_lock:
+        _openrouter_state["spent_usd"] += cost
+    _record_usage({
+        "usage": {
+            "input_tokens": usage.get("prompt_tokens", 0),
+            "output_tokens": usage.get("completion_tokens", 0),
+            "cache_creation_input_tokens": usage.get("cached_tokens", 0),
+        },
+        "total_cost_usd": cost,
+        "duration_ms": int((time.monotonic() - started) * 1000),
+    })
+    return text
+
+
+def _claude_with_openrouter_fallback(
+    cmd: list[str], *, prompt: str, model: str, system: str | None, timeout: int
+) -> str | None:
+    text = _call_claude_chain(cmd, prompt=prompt, timeout=timeout)
+    if text is not None or not _openrouter_fallback_enabled():
+        return text
+    with _usage_lock:
+        _usage_totals["openrouter_fallback_calls"] = _usage_totals.get("openrouter_fallback_calls", 0) + 1
+        first = not _openrouter_state["fallback_logged"]
+        _openrouter_state["fallback_logged"] = True
+    if first:
+        logger.warning(
+            "All Claude CLI profiles failed; falling back to OpenRouter (billed per token, "
+            "run limit $%s). Further fallbacks this run are not logged individually.",
+            _openrouter_budget_usd(),
+        )
+    return _call_openrouter(prompt=prompt, model=model, system=system, timeout=timeout)
+
+
+def _call_claude_chain(cmd: list[str], *, prompt: str, timeout: int) -> str | None:
+    profiles = _active_profiles(CLAUDE_PROFILE_CHAIN or (None,))
+    for i, profile in enumerate(profiles):
+        is_last = i == len(profiles) - 1
+        profile_home = CLAUDE_PROFILES_DIR / profile if profile else None
+        text_result, should_retry = _call_claude_cli(
+            cmd, prompt=prompt, timeout=timeout, home=profile_home, profile_label=profile
+        )
+        if text_result is not None:
+            return text_result
+        if not should_retry or is_last:
+            return None
+        logger.warning(
+            "claude profile %r failed, falling back to next profile in chain", profile
+        )
+    return None
+
+
 def call_model_text(
     *, prompt: str, model: str, system: str | None, timeout: int, effort: str | None = None
 ) -> str | None:
@@ -216,45 +340,7 @@ def call_model_text(
     provider = choose_provider()
 
     if provider == "openrouter":
-        try:
-            from llm_openrouter import OpenRouterClient  # type: ignore
-        except Exception:
-            logger.error(
-                "OpenRouter provider selected but llm_openrouter.OpenRouterClient is unavailable."
-            )
-            return None
-
-        started = time.monotonic()
-        try:
-            target_model = (
-                os.environ.get("OPENROUTER_MODEL")
-                or os.environ.get("CANDIDATE_POOL_OPENROUTER_MODEL")
-                or model
-            )
-            client = OpenRouterClient(model=target_model, timeout=timeout)
-            text = client.complete(system=system, user=prompt)
-        except ValueError as e:
-            logger.error("OpenRouter config error: %s", e)
-            with _usage_lock:
-                _usage_totals["errors"] += 1
-            return None
-        except Exception:
-            logger.exception("OpenRouter call failed")
-            with _usage_lock:
-                _usage_totals["errors"] += 1
-            return None
-
-        usage = client.last_usage or {}
-        _record_usage({
-            "usage": {
-                "input_tokens": usage.get("prompt_tokens", 0),
-                "output_tokens": usage.get("completion_tokens", 0),
-                "cache_creation_input_tokens": usage.get("cached_tokens", 0),
-            },
-            "total_cost_usd": usage.get("total_cost", 0.0),
-            "duration_ms": int((time.monotonic() - started) * 1000),
-        })
-        return text
+        return _call_openrouter(prompt=prompt, model=model, system=system, timeout=timeout)
 
     if provider == "codex":
         try:
@@ -322,21 +408,9 @@ def call_model_text(
     if effort:
         cmd += ["--effort", effort]
 
-    profiles = _active_profiles(CLAUDE_PROFILE_CHAIN or (None,))
-    for i, profile in enumerate(profiles):
-        is_last = i == len(profiles) - 1
-        profile_home = CLAUDE_PROFILES_DIR / profile if profile else None
-        text_result, should_retry = _call_claude_cli(
-            cmd, prompt=prompt, timeout=timeout, home=profile_home, profile_label=profile
-        )
-        if text_result is not None:
-            return text_result
-        if not should_retry or is_last:
-            return None
-        logger.warning(
-            "claude profile %r failed, falling back to next profile in chain", profile
-        )
-    return None
+    return _claude_with_openrouter_fallback(
+        cmd, prompt=prompt, model=model, system=system, timeout=timeout
+    )
 
 
 def _active_profiles(profiles: tuple[str | None, ...]) -> tuple[str | None, ...]:

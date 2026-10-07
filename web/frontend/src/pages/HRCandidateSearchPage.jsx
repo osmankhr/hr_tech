@@ -138,7 +138,7 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
   const [pipelineBusy, setPipelineBusy] = useState(false);
   const [pipelineError, setPipelineError] = useState("");
   const [pipelineMessage, setPipelineMessage] = useState("");
-  const [pipelineMaxCandidates, setPipelineMaxCandidates] = useState("");
+  const [pipelineMaxCandidates, setPipelineMaxCandidates] = useState("100");
   const [campaignArtifactStatus, setCampaignArtifactStatus] = useState({});
   const [campaignExportBusy, setCampaignExportBusy] = useState({});
   const [configVersions, setConfigVersions] = useState([]);
@@ -818,7 +818,7 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
       setPipelineMessage(
         parsedMax
           ? `Pipeline started (run #${response.run_id}) with max_candidates=${parsedMax}. Please wait while it is running.`
-          : `Pipeline started (run #${response.run_id}) assessing all candidates. Please wait while it is running.`
+          : `Pipeline started (run #${response.run_id}) with the default cap (100 candidates). Please wait while it is running.`
       );
       const runs = await campaignApi.getPipelineRuns(pipelineCampaignId);
       setPipelineRuns(Array.isArray(runs) ? runs : []);
@@ -1241,12 +1241,12 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
                     type="number"
                     min={1}
                     value={pipelineMaxCandidates}
-                    placeholder="All candidates (leave blank for all)"
+                    placeholder="Default: 100"
                     onChange={(event) => setPipelineMaxCandidates(event.target.value)}
                     className="w-full rounded-lg border border-slate-300 px-3 py-2.5 outline-none focus:border-indigo-600"
                   />
                   <p className="mt-1 text-xs text-slate-500">
-                    Number of candidates to review and rank. Leave blank to assess all candidates returned by Exa, or set a number to cap the evaluation.
+                    Maximum number of candidates to review and rank (default 100). Higher numbers cost proportionally more LLM usage; leave blank for the default.
                   </p>
                 </label>
 

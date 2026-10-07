@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+import random
+import time
 import urllib.error
 import urllib.request
 from typing import Any
@@ -12,6 +14,32 @@ logger = logging.getLogger(__name__)
 
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 DEFAULT_OPENROUTER_MODEL = "anthropic/claude-sonnet-5"
+
+# Transient failures worth retrying: request timeout, rate limit, and upstream/server errors.
+# Everything else (400/401/402/403/404...) is a config or request problem; retrying only wastes time.
+RETRYABLE_HTTP_CODES = {408, 429, 500, 502, 503, 504}
+DEFAULT_MAX_ATTEMPTS = 3
+MAX_RETRY_WAIT_SECONDS = 30.0
+_BASE_BACKOFF_SECONDS = 2.0
+
+_sleep = time.sleep  # indirection so tests don't really wait
+
+
+def _max_attempts() -> int:
+    try:
+        return max(1, int(os.environ.get("CANDIDATE_POOL_OPENROUTER_ATTEMPTS", DEFAULT_MAX_ATTEMPTS)))
+    except ValueError:
+        return DEFAULT_MAX_ATTEMPTS
+
+
+def _retry_wait(attempt: int, retry_after: str | None) -> float:
+    """Seconds to wait before attempt `attempt + 1`: honour Retry-After, else exponential + jitter."""
+    if retry_after:
+        try:
+            return min(max(float(retry_after), 0.0), MAX_RETRY_WAIT_SECONDS)
+        except ValueError:
+            pass
+    return min(_BASE_BACKOFF_SECONDS * (2 ** (attempt - 1)) + random.uniform(0, 1), MAX_RETRY_WAIT_SECONDS)
 
 
 class OpenRouterClient:
@@ -65,34 +93,52 @@ class OpenRouterClient:
             "User-Agent": "CandidatePool/1.0",
         }
 
-        req = urllib.request.Request(
-            OPENROUTER_API_URL,
-            data=body_bytes,
-            headers=headers,
-            method="POST",
-        )
-
-        try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as response:
-                raw_response = response.read().decode("utf-8")
-        except urllib.error.HTTPError as e:
-            err_body = ""
-            try:
-                err_body = e.read().decode("utf-8", errors="replace")
-            except Exception:
-                pass
-            logger.error(
-                "OpenRouter API HTTP %d: %s (body: %s)",
-                e.code,
-                e.reason,
-                err_body[:300],
+        attempts = _max_attempts()
+        raw_response = ""
+        for attempt in range(1, attempts + 1):
+            req = urllib.request.Request(
+                OPENROUTER_API_URL,
+                data=body_bytes,
+                headers=headers,
+                method="POST",
             )
-            raise RuntimeError(
-                f"OpenRouter API HTTP {e.code}: {e.reason} - {err_body[:200]}"
-            ) from e
-        except urllib.error.URLError as e:
-            logger.error("OpenRouter network error: %s", e.reason)
-            raise RuntimeError(f"OpenRouter network error: {e.reason}") from e
+            try:
+                with urllib.request.urlopen(req, timeout=self.timeout) as response:
+                    raw_response = response.read().decode("utf-8")
+                break
+            except urllib.error.HTTPError as e:
+                err_body = ""
+                try:
+                    err_body = e.read().decode("utf-8", errors="replace")
+                except Exception:
+                    pass
+                retryable = e.code in RETRYABLE_HTTP_CODES and attempt < attempts
+                logger.log(
+                    logging.WARNING if retryable else logging.ERROR,
+                    "OpenRouter API HTTP %d: %s (attempt %d/%d, body: %s)",
+                    e.code,
+                    e.reason,
+                    attempt,
+                    attempts,
+                    err_body[:300],
+                )
+                if not retryable:
+                    raise RuntimeError(
+                        f"OpenRouter API HTTP {e.code}: {e.reason} - {err_body[:200]}"
+                    ) from e
+                _sleep(_retry_wait(attempt, e.headers.get("Retry-After") if e.headers else None))
+            except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
+                reason = getattr(e, "reason", e)
+                logger.log(
+                    logging.WARNING if attempt < attempts else logging.ERROR,
+                    "OpenRouter network error: %s (attempt %d/%d)",
+                    reason,
+                    attempt,
+                    attempts,
+                )
+                if attempt >= attempts:
+                    raise RuntimeError(f"OpenRouter network error: {reason}") from e
+                _sleep(_retry_wait(attempt, None))
 
         try:
             data = json.loads(raw_response)
@@ -129,7 +175,10 @@ class OpenRouterClient:
                 or usage.get("cached_tokens")
                 or 0
             ),
-            "total_cost": float(usage.get("total_cost") or data.get("total_cost") or 0.0),
+            # OpenRouter reports credits spent as `usage.cost`; `total_cost` is kept as a fallback.
+            "total_cost": float(
+                usage.get("cost") or usage.get("total_cost") or data.get("total_cost") or 0.0
+            ),
         }
 
         return content if isinstance(content, str) else str(content)

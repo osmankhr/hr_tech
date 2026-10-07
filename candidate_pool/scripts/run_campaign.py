@@ -61,13 +61,13 @@ def main() -> None:
         "--filter-max-candidates",
         type=int,
         default=None,
-        help="Override filter.max_candidates for this run",
+        help="Override filter.max_candidates for this run (0 = no cap; default 100 per location)",
     )
     parser.add_argument(
         "--ranking-max-candidates",
         type=int,
         default=None,
-        help="Override ranking.max_candidates for this run",
+        help="Override ranking.max_candidates for this run (0 = no cap; default 100)",
     )
     parser.add_argument(
         "--filter-max-workers",

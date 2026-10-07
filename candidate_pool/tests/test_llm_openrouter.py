@@ -114,7 +114,7 @@ class TestOpenRouterClient(unittest.TestCase):
             fp=io.BytesIO(b'{"error": "rate limited"}')
         )
 
-        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "sk-test-key"}):
+        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "sk-test-key"}), patch("llm_openrouter._sleep"):
             client = OpenRouterClient()
             with self.assertRaises(RuntimeError) as ctx:
                 client.complete(user="Hello")
@@ -125,9 +125,10 @@ class TestLLMProviderOpenRouterIntegration(unittest.TestCase):
     def setUp(self):
         llm_provider.reset_usage_summary()
 
-    def test_choose_provider_prefers_openrouter_when_key_present(self):
+    def test_choose_provider_does_not_prefer_openrouter_just_because_key_present(self):
+        # The key only enables OpenRouter as a fallback behind the Claude CLI profiles.
         with patch.dict(os.environ, {"OPENROUTER_API_KEY": "sk-or-test", "CANDIDATE_POOL_LLM_PROVIDER": "auto"}):
-            self.assertEqual(llm_provider.choose_provider(), "openrouter")
+            self.assertNotEqual(llm_provider.choose_provider(), "openrouter")
 
     def test_choose_provider_explicit_openrouter(self):
         with patch.dict(os.environ, {"CANDIDATE_POOL_LLM_PROVIDER": "openrouter"}):

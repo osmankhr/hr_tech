@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import pipeline_status
+import prompt_trim
 
 from .agents.candidate_scorer_agent import CandidateScorerAgent
 from .agents.feature_designer_agent import FeatureDesignerAgent
@@ -29,8 +30,8 @@ class RankingPipeline:
             config.get("filter", {}).get("model", "claude-sonnet-5"),
         )
         self.max_features = int(self.rank_cfg.get("max_features", 10))
-        raw_max = self.rank_cfg.get("max_candidates")
-        self.max_candidates = int(raw_max) if raw_max is not None and int(raw_max) > 0 else None
+        # Missing -> default cap; 0 -> no cap (explicit opt-in). See prompt_trim.
+        self.max_candidates = prompt_trim.resolve_max_candidates(self.rank_cfg.get("max_candidates"))
         self.text_chars = int(self.rank_cfg.get("candidate_text_chars", 5000))
         self.batch_size = max(1, int(self.rank_cfg.get("batch_size", 50)))
         self.max_workers = max(1, int(self.rank_cfg.get("max_workers", self.batch_size)))

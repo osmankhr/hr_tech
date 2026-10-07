@@ -242,6 +242,12 @@ Every LLM call in the pipeline (`generate_queries.py`, `filter.py`,
 - **Provider choice** (`choose_provider()`): env var `CANDIDATE_POOL_LLM_PROVIDER` (`claude`/
   `copilot`) wins if set; otherwise heuristically picks `copilot` if the local git/`gh` identity
   matches `CANDIDATE_POOL_COPILOT_USERS` (default `"MG77XN_ingcp"`), else defaults to `claude`.
+- **OpenRouter** is a fallback, not a default: with `OPENROUTER_API_KEY` set, a call that fails on
+  every Claude CLI profile is retried once through OpenRouter (pay-per-token, with retry/backoff on
+  429/5xx and a per-run spend limit, `CANDIDATE_POOL_OPENROUTER_MAX_USD`, default $5). It is only the
+  primary provider when `CANDIDATE_POOL_LLM_PROVIDER=openrouter`.
+- **Candidate caps**: when `max_candidates` is not set, filter reviews at most 100 candidates per
+  location and ranking ranks at most 100 (`CANDIDATE_POOL_DEFAULT_MAX_CANDIDATES`); `0` means no cap.
 - **Claude CLI invocation pattern** (the "minimal overhead" convention — see PLAN.md history):
   ```
   ["claude", "--print", "--model", <model>, "--tools", "", "--output-format", "json"]
