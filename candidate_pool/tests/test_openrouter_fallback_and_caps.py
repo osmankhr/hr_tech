@@ -197,3 +197,22 @@ def test_filter_caps_by_default_and_uncaps_only_on_explicit_zero(tmp_path):
     assert f.CandidateFilter(tmp_path, {"filter": {}}).max_candidates == 100
     assert f.CandidateFilter(tmp_path, {"filter": {"max_candidates": 30}}).max_candidates == 30
     assert f.CandidateFilter(tmp_path, {"filter": {"max_candidates": 0}}).max_candidates is None
+
+
+# ----------------------------------------------------------------------------- model slugs
+@pytest.mark.parametrize(
+    "given,expected",
+    [
+        ("claude-sonnet-5", "anthropic/claude-sonnet-5"),
+        ("claude-sonnet-5-5", "anthropic/claude-sonnet-5.5"),
+        ("claude-opus-5-5", "anthropic/claude-opus-5.5"),
+        ("claude-haiku-5-5", "anthropic/claude-haiku-5.5"),
+        ("anthropic/claude-sonnet-5.5", "anthropic/claude-sonnet-5.5"),
+        ("openai/gpt-5", "openai/gpt-5"),
+    ],
+)
+def test_openrouter_model_slug_normalisation(monkeypatch, given, expected):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+    monkeypatch.delenv("OPENROUTER_MODEL", raising=False)
+    monkeypatch.delenv("CANDIDATE_POOL_OPENROUTER_MODEL", raising=False)
+    assert orr.OpenRouterClient(model=given).model == expected

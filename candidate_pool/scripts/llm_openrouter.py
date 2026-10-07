@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import random
+import re
 import time
 import urllib.error
 import urllib.request
@@ -67,7 +68,9 @@ class OpenRouterClient:
 
         chosen_model = env_model or model or DEFAULT_OPENROUTER_MODEL
         if "/" not in chosen_model and chosen_model.startswith("claude-"):
-            chosen_model = f"anthropic/{chosen_model}"
+            # Anthropic API ids use dashes (claude-sonnet-5-5); OpenRouter slugs use a dot for the
+            # minor version (anthropic/claude-sonnet-5.5).
+            chosen_model = "anthropic/" + re.sub(r"^(claude-(?:opus|sonnet|haiku)-\d+)-(\d+)$", r"\1.\2", chosen_model)
 
         self.model = chosen_model
         self.timeout = timeout
