@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle } from "lucide-react";
 import { campaignApi } from "../api/campaignApi";
 import { candidateApi } from "../api/candidateApi";
@@ -306,7 +306,7 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
     }
   }, [pipelineCampaignId, activeCampaigns]);
 
-  useEffect(() => {
+  const loadDashboardCandidates = useCallback(async () => {
     if (!dashboardCampaignId) {
       setDashboardCandidates([]);
       setDashboardPage(1);
@@ -314,27 +314,33 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
       return;
     }
 
-    const load = async () => {
-      setDashboardLoadingCandidates(true);
-      try {
-        const data = await campaignApi.getCandidatesByCampaign(
-          dashboardCampaignId,
-          dashboardPage,
-          10
-        );
+    setDashboardLoadingCandidates(true);
+    try {
+      const data = await campaignApi.getCandidatesByCampaign(
+        dashboardCampaignId,
+        dashboardPage,
+        10
+      );
 
-        const mapped = (data.items || []).map(mapCampaignCandidate);
-        setDashboardCandidates(mapped);
-        setDashboardTotalPages(data.pagination?.total_pages || 0);
-      } catch (error) {
-        setApiError(error.message || "Could not load campaign candidates.");
-      } finally {
-        setDashboardLoadingCandidates(false);
-      }
-    };
-
-    load();
+      const mapped = (data.items || []).map(mapCampaignCandidate);
+      setDashboardCandidates(mapped);
+      setDashboardTotalPages(data.pagination?.total_pages || 0);
+    } catch (error) {
+      setApiError(error.message || "Could not load campaign candidates.");
+    } finally {
+      setDashboardLoadingCandidates(false);
+    }
   }, [dashboardCampaignId, dashboardPage, setApiError]);
+
+  useEffect(() => {
+    loadDashboardCandidates();
+  }, [loadDashboardCandidates]);
+
+  useEffect(() => {
+    if (view === "dashboard" && dashboardCampaignId) {
+      loadDashboardCandidates();
+    }
+  }, [view, dashboardCampaignId, loadDashboardCandidates]);
 
   useEffect(() => {
     if (!dashboardCampaignId) {
@@ -498,6 +504,7 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
         try {
           setPipelineMessage("Pipeline completed. Importing ranked results...");
           await campaignApi.importRankedResults(pipelineCampaignId, "");
+          loadDashboardCandidates().catch(() => {});
         } catch (error) {
           setPipelineError(
             error?.message ||
@@ -514,6 +521,7 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
 
         loadCandidates().catch(() => {});
         loadCampaigns().catch(() => {});
+        loadDashboardCandidates().catch(() => {});
         refreshArtifactStatuses([pipelineCampaignId]).catch(() => {});
         loadConfigVersions(pipelineCampaignId).catch(() => {});
       }
@@ -535,7 +543,7 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
     return () => {
       eventSource.close();
     };
-  }, [pipelineCampaignId, loadCampaigns, loadCandidates]);
+  }, [pipelineCampaignId, loadCampaigns, loadCandidates, loadDashboardCandidates]);
 
   useEffect(() => {
     if (campaigns.length === 0) {
