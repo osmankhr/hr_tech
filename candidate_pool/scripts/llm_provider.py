@@ -229,7 +229,33 @@ def _openrouter_budget_usd() -> float | None:
         return _OPENROUTER_DEFAULT_BUDGET_USD
 
 
-def _call_openrouter(*, prompt: str, model: str, system: str | None, timeout: int) -> str | None:
+# Cheaper OpenRouter model per pipeline stage. The filter step is a short, structured screening
+# decision where Haiku 5.5 agreed with Sonnet about as often as Sonnet agrees with itself, at ~1/15th
+# of the price (20-candidate check, Oct 2026). Ranking and query generation keep the requested model.
+OPENROUTER_STAGE_DEFAULT_MODELS = {"filter": "anthropic/claude-haiku-5.5"}
+
+
+def _openrouter_model_for(stage: str | None, requested: str) -> str:
+    """Pick the OpenRouter model: stage env > global env > stage default > requested model.
+
+    stage env:  CANDIDATE_POOL_OPENROUTER_MODEL_<STAGE>  (e.g. ..._FILTER)
+    global env: OPENROUTER_MODEL / CANDIDATE_POOL_OPENROUTER_MODEL
+    """
+    if stage:
+        stage_env = (os.environ.get(f"CANDIDATE_POOL_OPENROUTER_MODEL_{stage.upper()}") or "").strip()
+        if stage_env:
+            return stage_env
+    global_env = (
+        os.environ.get("OPENROUTER_MODEL") or os.environ.get("CANDIDATE_POOL_OPENROUTER_MODEL") or ""
+    ).strip()
+    if global_env:
+        return global_env
+    return OPENROUTER_STAGE_DEFAULT_MODELS.get(stage or "", requested)
+
+
+def _call_openrouter(
+    *, prompt: str, model: str, system: str | None, timeout: int, stage: str | None = None
+) -> str | None:
     budget = _openrouter_budget_usd()
     with _usage_lock:
         over_budget = budget is not None and _openrouter_state["spent_usd"] >= budget
@@ -256,12 +282,9 @@ def _call_openrouter(*, prompt: str, model: str, system: str | None, timeout: in
 
     started = time.monotonic()
     try:
-        target_model = (
-            os.environ.get("OPENROUTER_MODEL")
-            or os.environ.get("CANDIDATE_POOL_OPENROUTER_MODEL")
-            or model
+        client = OpenRouterClient(
+            model=_openrouter_model_for(stage, model), timeout=timeout, use_env_model=False
         )
-        client = OpenRouterClient(model=target_model, timeout=timeout)
         text = client.complete(system=system, user=prompt)
     except ValueError as e:
         logger.error("OpenRouter config error: %s", e)
@@ -291,7 +314,7 @@ def _call_openrouter(*, prompt: str, model: str, system: str | None, timeout: in
 
 
 def _claude_with_openrouter_fallback(
-    cmd: list[str], *, prompt: str, model: str, system: str | None, timeout: int
+    cmd: list[str], *, prompt: str, model: str, system: str | None, timeout: int, stage: str | None = None
 ) -> str | None:
     text = _call_claude_chain(cmd, prompt=prompt, timeout=timeout)
     if text is not None or not _openrouter_fallback_enabled():
@@ -306,7 +329,7 @@ def _claude_with_openrouter_fallback(
             "run limit $%s). Further fallbacks this run are not logged individually.",
             _openrouter_budget_usd(),
         )
-    return _call_openrouter(prompt=prompt, model=model, system=system, timeout=timeout)
+    return _call_openrouter(prompt=prompt, model=model, system=system, timeout=timeout, stage=stage)
 
 
 def _call_claude_chain(cmd: list[str], *, prompt: str, timeout: int) -> str | None:
@@ -328,7 +351,13 @@ def _call_claude_chain(cmd: list[str], *, prompt: str, timeout: int) -> str | No
 
 
 def call_model_text(
-    *, prompt: str, model: str, system: str | None, timeout: int, effort: str | None = None
+    *,
+    prompt: str,
+    model: str,
+    system: str | None,
+    timeout: int,
+    effort: str | None = None,
+    stage: str | None = None,
 ) -> str | None:
     """Call selected LLM provider and return raw text output.
 
@@ -336,11 +365,12 @@ def call_model_text(
     as "this one candidate failed" and keeps the batch going.
 
     `effort` is passed to `claude --effort` (Claude CLI provider only; other providers ignore it).
+    `stage` ("filter", ...) only selects a per-stage OpenRouter model; the Claude CLI path ignores it.
     """
     provider = choose_provider()
 
     if provider == "openrouter":
-        return _call_openrouter(prompt=prompt, model=model, system=system, timeout=timeout)
+        return _call_openrouter(prompt=prompt, model=model, system=system, timeout=timeout, stage=stage)
 
     if provider == "codex":
         try:
@@ -409,7 +439,7 @@ def call_model_text(
         cmd += ["--effort", effort]
 
     return _claude_with_openrouter_fallback(
-        cmd, prompt=prompt, model=model, system=system, timeout=timeout
+        cmd, prompt=prompt, model=model, system=system, timeout=timeout, stage=stage
     )
 
 

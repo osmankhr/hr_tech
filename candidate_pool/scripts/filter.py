@@ -234,6 +234,7 @@ class CandidateFilter:
             system=_SYSTEM_INSTRUCTIONS,
             timeout=120,
             effort=prompt_trim.candidate_effort(),
+            stage="filter",
         )
         if not output:
             return None

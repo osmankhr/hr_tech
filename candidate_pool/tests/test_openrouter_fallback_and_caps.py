@@ -216,3 +216,57 @@ def test_openrouter_model_slug_normalisation(monkeypatch, given, expected):
     monkeypatch.delenv("OPENROUTER_MODEL", raising=False)
     monkeypatch.delenv("CANDIDATE_POOL_OPENROUTER_MODEL", raising=False)
     assert orr.OpenRouterClient(model=given).model == expected
+
+
+# ----------------------------------------------------------------------------- per-stage models
+@pytest.fixture
+def clean_model_env(monkeypatch):
+    for var in ("OPENROUTER_MODEL", "CANDIDATE_POOL_OPENROUTER_MODEL", "CANDIDATE_POOL_OPENROUTER_MODEL_FILTER"):
+        monkeypatch.delenv(var, raising=False)
+    return monkeypatch
+
+
+def test_filter_stage_defaults_to_haiku_other_stages_keep_requested_model(clean_model_env):
+    assert lp._openrouter_model_for("filter", "claude-sonnet-5") == "anthropic/claude-haiku-5.5"
+    assert lp._openrouter_model_for("ranking", "claude-sonnet-5") == "claude-sonnet-5"
+    assert lp._openrouter_model_for(None, "claude-sonnet-5") == "claude-sonnet-5"
+
+
+def test_model_precedence_stage_env_over_global_env_over_stage_default(clean_model_env):
+    clean_model_env.setenv("OPENROUTER_MODEL", "anthropic/claude-opus-5.5")
+    assert lp._openrouter_model_for("filter", "x") == "anthropic/claude-opus-5.5"  # global beats stage default
+    assert lp._openrouter_model_for("ranking", "x") == "anthropic/claude-opus-5.5"
+    clean_model_env.setenv("CANDIDATE_POOL_OPENROUTER_MODEL_FILTER", "anthropic/claude-sonnet-5.5")
+    assert lp._openrouter_model_for("filter", "x") == "anthropic/claude-sonnet-5.5"  # stage env beats global
+    assert lp._openrouter_model_for("ranking", "x") == "anthropic/claude-opus-5.5"
+
+
+def test_stage_model_reaches_the_client_even_when_global_env_is_set(clean_model_env):
+    clean_model_env.setenv("OPENROUTER_API_KEY", "sk")
+    clean_model_env.setenv("OPENROUTER_MODEL", "anthropic/claude-opus-5.5")
+    clean_model_env.setenv("CANDIDATE_POOL_OPENROUTER_MODEL_FILTER", "anthropic/claude-haiku-5.5")
+    seen = {}
+
+    class Fake(orr.OpenRouterClient):
+        def complete(self, *, system=None, user):
+            seen["model"] = self.model
+            self.last_usage = {"total_cost": 0.0}
+            return "ok"
+
+    clean_model_env.setattr(orr, "OpenRouterClient", Fake)
+    lp.reset_usage_summary()
+    assert lp._call_openrouter(prompt="p", model="claude-sonnet-5", system=None, timeout=5, stage="filter") == "ok"
+    assert seen["model"] == "anthropic/claude-haiku-5.5"
+    assert lp._call_openrouter(prompt="p", model="claude-sonnet-5", system=None, timeout=5, stage="ranking") == "ok"
+    assert seen["model"] == "anthropic/claude-opus-5.5"
+
+
+def test_filter_passes_its_stage_to_call_model_text(tmp_path, monkeypatch):
+    import filter as f
+
+    (tmp_path / "input").mkdir()
+    (tmp_path / "input" / "filter_criteria.md").write_text("c")
+    captured = {}
+    monkeypatch.setattr(f, "call_model_text", lambda **kw: captured.update(kw) or '{"recommendation": "ACCEPT"}')
+    f.CandidateFilter(tmp_path, {"filter": {}})._call_model("prompt")
+    assert captured["stage"] == "filter"

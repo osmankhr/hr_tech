@@ -51,6 +51,7 @@ class OpenRouterClient:
         model: str | None = None,
         timeout: int = 120,
         api_key: str | None = None,
+        use_env_model: bool = True,
     ) -> None:
         self.api_key = (
             api_key
@@ -60,10 +61,12 @@ class OpenRouterClient:
         if not self.api_key:
             raise ValueError("OPENROUTER_API_KEY environment variable is not set.")
 
+        # use_env_model=False means the caller already resolved the model (llm_provider applies
+        # per-stage overrides), so the global env override must not clobber it.
         env_model = (
-            os.environ.get("OPENROUTER_MODEL")
-            or os.environ.get("CANDIDATE_POOL_OPENROUTER_MODEL")
-            or ""
+            (os.environ.get("OPENROUTER_MODEL") or os.environ.get("CANDIDATE_POOL_OPENROUTER_MODEL") or "")
+            if use_env_model
+            else ""
         ).strip()
 
         chosen_model = env_model or model or DEFAULT_OPENROUTER_MODEL
