@@ -11,7 +11,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
-DEFAULT_OPENROUTER_MODEL = "anthropic/claude-3.7-sonnet"
+DEFAULT_OPENROUTER_MODEL = "anthropic/claude-sonnet-5"
 
 
 class OpenRouterClient:
@@ -37,7 +37,11 @@ class OpenRouterClient:
             or ""
         ).strip()
 
-        self.model = env_model or model or DEFAULT_OPENROUTER_MODEL
+        chosen_model = env_model or model or DEFAULT_OPENROUTER_MODEL
+        if "/" not in chosen_model and chosen_model.startswith("claude-"):
+            chosen_model = f"anthropic/{chosen_model}"
+
+        self.model = chosen_model
         self.timeout = timeout
         self.last_usage: dict[str, Any] = {}
 

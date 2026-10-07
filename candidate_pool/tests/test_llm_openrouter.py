@@ -31,12 +31,12 @@ class TestOpenRouterClient(unittest.TestCase):
 
     def test_model_resolution_precedence(self):
         # 1. Environment variable override
-        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "sk-test", "OPENROUTER_MODEL": "anthropic/claude-3.5-sonnet"}):
+        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "sk-test", "OPENROUTER_MODEL": "anthropic/claude-3.5-sonnet"}, clear=True):
             client = OpenRouterClient(model="anthropic/claude-3.7-sonnet")
             self.assertEqual(client.model, "anthropic/claude-3.5-sonnet")
 
         # 2. CANDIDATE_POOL_OPENROUTER_MODEL override
-        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "sk-test", "CANDIDATE_POOL_OPENROUTER_MODEL": "anthropic/claude-3-opus"}):
+        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "sk-test", "CANDIDATE_POOL_OPENROUTER_MODEL": "anthropic/claude-3-opus"}, clear=True):
             client = OpenRouterClient()
             self.assertEqual(client.model, "anthropic/claude-3-opus")
 
@@ -49,6 +49,11 @@ class TestOpenRouterClient(unittest.TestCase):
         with patch.dict(os.environ, {"OPENROUTER_API_KEY": "sk-test"}, clear=True):
             client = OpenRouterClient()
             self.assertEqual(client.model, DEFAULT_OPENROUTER_MODEL)
+
+        # 5. Model without slash gets auto-prefixed with anthropic/
+        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "sk-test"}, clear=True):
+            client = OpenRouterClient(model="claude-sonnet-5")
+            self.assertEqual(client.model, "anthropic/claude-sonnet-5")
 
     @patch("urllib.request.urlopen")
     def test_complete_success(self, mock_urlopen):
