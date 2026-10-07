@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+import prompt_trim
 from .agent_base import JsonAgent
 from ..prompt_store import PromptStore
 from ..utils.json_utils import ensure_dict, ensure_list
@@ -25,7 +26,7 @@ class ScoringDesignerAgent(JsonAgent):
         user = self.prompt_store.get("scoring_designer_user").format(
             job_description=job_description,
             filter_criteria=filter_criteria,
-            feature_schema_json=json.dumps(feature_schema, indent=2, ensure_ascii=False),
+            feature_schema_json=prompt_trim.dumps(prompt_trim.strip_bookkeeping(feature_schema)),
         )
 
         obj = self.call_json(system=system, user=user) or {}

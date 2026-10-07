@@ -6,6 +6,7 @@ from typing import Any
 
 from .agent_base import JsonAgent
 from ..prompt_store import PromptStore
+import prompt_trim
 from ..utils.json_utils import ensure_list
 
 
@@ -26,12 +27,14 @@ class CandidateScorerAgent(JsonAgent):
         profile = self._candidate_summary(candidate, text_chars=text_chars)
 
         user = self.prompt_store.get("candidate_scorer_user").format(
-            candidate_json=json.dumps(profile, indent=2, ensure_ascii=False),
-            feature_schema_json=json.dumps(feature_schema, indent=2, ensure_ascii=False),
-            scoring_policy_json=json.dumps(scoring_policy, indent=2, ensure_ascii=False),
+            candidate_json=prompt_trim.dumps(profile),
+            feature_schema_json=prompt_trim.dumps(prompt_trim.strip_bookkeeping(feature_schema)),
+            scoring_policy_json=prompt_trim.dumps(prompt_trim.strip_bookkeeping(scoring_policy)),
         )
+        if prompt_trim.terse_output_enabled():
+            user += prompt_trim.TERSE_OUTPUT_SUFFIX
 
-        obj = self.call_json(system=system, user=user) or {}
+        obj = self.call_json(system=system, user=user, effort=prompt_trim.candidate_effort()) or {}
         assessments = self._normalize_assessments(obj.get("feature_assessments"), feature_schema)
         gate_flags = ensure_list(obj.get("gate_flags"))
 
@@ -43,6 +46,7 @@ class CandidateScorerAgent(JsonAgent):
         }
 
     def _candidate_summary(self, candidate: dict[str, Any], text_chars: int) -> dict[str, Any]:
+        text_excerpt = (candidate.get("text") or "")[:text_chars]
         return {
             "url": candidate.get("url"),
             "title": candidate.get("title"),
@@ -50,8 +54,8 @@ class CandidateScorerAgent(JsonAgent):
             "query": candidate.get("query"),
             "published_date": candidate.get("published_date"),
             "ai_review": candidate.get("ai_review"),
-            "highlights": candidate.get("highlights"),
-            "text_excerpt": (candidate.get("text") or "")[:text_chars],
+            "highlights": prompt_trim.dedupe_highlights(candidate.get("highlights"), text_excerpt),
+            "text_excerpt": text_excerpt,
         }
 
     def _normalize_assessments(

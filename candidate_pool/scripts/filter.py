@@ -12,6 +12,7 @@ from typing import Any
 
 import pipeline_status
 from llm_provider import call_model_text
+import prompt_trim
 from typesafe_client import ask_choice, ask_noul, ask_score
 
 logger = logging.getLogger(__name__)
@@ -232,18 +233,20 @@ class CandidateFilter:
             model=self.model,
             system=_SYSTEM_INSTRUCTIONS,
             timeout=120,
+            effort=prompt_trim.candidate_effort(),
         )
         if not output:
             return None
         return _extract_json(output)
 
     def _review_candidate(self, candidate: dict[str, Any]) -> dict[str, Any]:
+        text_excerpt = (candidate.get("text") or "")[:3000]
         summary = {
             "url": candidate.get("url"),
             "title": candidate.get("title"),
             "location": candidate.get("location"),
-            "highlights": candidate.get("highlights"),
-            "text_excerpt": (candidate.get("text") or "")[:3000],
+            "highlights": prompt_trim.dedupe_highlights(candidate.get("highlights"), text_excerpt),
+            "text_excerpt": text_excerpt,
         }
 
         # None of the TypeSafe checks depend on Claude's answer -- they're independent judgments
@@ -286,7 +289,7 @@ class CandidateFilter:
 
         prompt = _PROMPT_TEMPLATE.format(
             criteria=self.criteria,
-            candidate_json=json.dumps(summary, indent=2, ensure_ascii=False),
+            candidate_json=prompt_trim.dumps(summary),
         )
 
         review = self._call_model(prompt)
