@@ -213,7 +213,8 @@ class CandidateFilter:
         self.config = config
         filter_cfg = config.get("filter", {})
         self.model = filter_cfg.get("model", "claude-sonnet-5")
-        self.max_candidates = filter_cfg.get("max_candidates", 100)
+        raw_max = filter_cfg.get("max_candidates")
+        self.max_candidates = int(raw_max) if raw_max is not None and int(raw_max) > 0 else None
         # Filter calls are I/O-bound (waiting on the model), so concurrency scales close to
         # linearly. This stage measured as ~60% of total pipeline wall-clock time on real
         # campaigns at the old default of 6 workers, while ranking (default ~50 workers) barely
@@ -398,14 +399,17 @@ class CandidateFilter:
         skipped: list[dict[str, Any]] = []
         for bucket_candidates in by_bucket.values():
             bucket_candidates.sort(key=lambda c: c.get("score") or 0, reverse=True)
-            to_review.extend(bucket_candidates[: self.max_candidates])
-            skipped.extend(bucket_candidates[self.max_candidates :])
+            if self.max_candidates is not None:
+                to_review.extend(bucket_candidates[: self.max_candidates])
+                skipped.extend(bucket_candidates[self.max_candidates :])
+            else:
+                to_review.extend(bucket_candidates)
 
         logger.info(
-            "Reviewing %d candidates across %d location(s) (cap=%d per location, skipped=%d)",
+            "Reviewing %d candidates across %d location(s) (cap=%s per location, skipped=%d)",
             len(to_review),
             len(by_bucket),
-            self.max_candidates,
+            str(self.max_candidates) if self.max_candidates is not None else "none",
             len(skipped),
         )
         pipeline_status.write(

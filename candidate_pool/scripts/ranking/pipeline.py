@@ -29,7 +29,8 @@ class RankingPipeline:
             config.get("filter", {}).get("model", "claude-sonnet-5"),
         )
         self.max_features = int(self.rank_cfg.get("max_features", 10))
-        self.max_candidates = int(self.rank_cfg.get("max_candidates", 1000))
+        raw_max = self.rank_cfg.get("max_candidates")
+        self.max_candidates = int(raw_max) if raw_max is not None and int(raw_max) > 0 else None
         self.text_chars = int(self.rank_cfg.get("candidate_text_chars", 5000))
         self.batch_size = max(1, int(self.rank_cfg.get("batch_size", 50)))
         self.max_workers = max(1, int(self.rank_cfg.get("max_workers", self.batch_size)))
@@ -182,7 +183,8 @@ class RankingPipeline:
                 if (c.get("ai_review") or {}).get("recommendation") == "ACCEPT"
             ]
 
-        candidates = candidates[: self.max_candidates]
+        if self.max_candidates is not None:
+            candidates = candidates[: self.max_candidates]
         logger.info("Loaded %d candidates for ranking", len(candidates))
         return candidates
 

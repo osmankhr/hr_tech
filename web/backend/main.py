@@ -348,7 +348,7 @@ def _build_location_filter_clause(locations):
     return "\n".join(lines)
 
 
-def _build_campaign_yaml(name: str, description: str, locations, max_candidates: int = 40):
+def _build_campaign_yaml(name: str, description: str, locations, max_candidates: Optional[int] = None):
     lines = [
         f"name: {json.dumps(name, ensure_ascii=False)}",
         f"description: {json.dumps(description, ensure_ascii=False)}",
@@ -379,7 +379,12 @@ def _build_campaign_yaml(name: str, description: str, locations, max_candidates:
         "  model: claude-sonnet-5",
         "",
         "filter:",
-        f"  max_candidates: {int(max_candidates)}",
+    ])
+
+    if max_candidates is not None and int(max_candidates) > 0:
+        lines.append(f"  max_candidates: {int(max_candidates)}")
+
+    lines.extend([
         "  model: claude-sonnet-5",
         "",
         "ranking:",
@@ -391,7 +396,12 @@ def _build_campaign_yaml(name: str, description: str, locations, max_candidates:
         "  feature_schema_path: data/ranking_feature_schema.json",
         "  scoring_policy_path: data/ranking_scoring_policy.json",
         "  max_features: 10",
-        "  max_candidates: 200",
+    ])
+
+    if max_candidates is not None and int(max_candidates) > 0:
+        lines.append(f"  max_candidates: {int(max_candidates)}")
+
+    lines.extend([
         "  candidate_text_chars: 5000",
         "  only_accepted: true",
         "  force_redesign: false",
@@ -794,7 +804,7 @@ def setup_pipeline_campaign(
             raise HTTPException(status_code=400, detail="Each location must include a non-empty name")
         cleaned_locations.append({"name": name, "hint": hint})
 
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
     folder_name = f"{_slugify(pipeline_name)}_{stamp}"
     campaign_dir = CANDIDATE_POOL_CAMPAIGNS_DIR / folder_name
     input_dir = campaign_dir / "input"
@@ -814,7 +824,7 @@ def setup_pipeline_campaign(
     filter_criteria_path = input_dir / "filter_criteria.md"
 
     campaign_yaml_path.write_text(
-        _build_campaign_yaml(pipeline_name, pipeline_description, cleaned_locations, max_candidates=target_profiles),
+        _build_campaign_yaml(pipeline_name, pipeline_description, cleaned_locations, max_candidates=None),
         encoding="utf-8",
     )
     job_description_path.write_text(job_description, encoding="utf-8")
@@ -1008,7 +1018,7 @@ def update_pipeline_config(
     sample_cv_filename = campaign_extra["sample_cv_filename"] if campaign_extra else None
 
     if starts_new_version:
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
         folder_name = f"{_slugify(pipeline_name)}_{stamp}"
         pipeline_dir = CANDIDATE_POOL_CAMPAIGNS_DIR / folder_name
         if pipeline_dir.exists():
@@ -1030,7 +1040,7 @@ def update_pipeline_config(
     filter_criteria_path = input_dir / "filter_criteria.md"
 
     campaign_yaml_path.write_text(
-        _build_campaign_yaml(pipeline_name, pipeline_description, cleaned_locations, max_candidates=target_profiles),
+        _build_campaign_yaml(pipeline_name, pipeline_description, cleaned_locations, max_candidates=None),
         encoding="utf-8",
     )
     job_description_path.write_text(job_description, encoding="utf-8")
@@ -1333,19 +1343,19 @@ def run_pipeline(
     current_user=Depends(get_current_user),
 ):
     allowed_run_types = {
-        "full": [],
-        "queries": ["--queries-only"],
+        "full": ["--force-queries", "--force-ranking-redesign"],
+        "queries": ["--queries-only", "--force-queries"],
         "search": ["--search-only"],
         "filter": ["--filter-only"],
-        "rank": ["--rank-only"],
+        "rank": ["--rank-only", "--force-ranking-redesign"],
         "report": ["--report-only"],
     }
 
     if run_type not in allowed_run_types:
         raise HTTPException(status_code=400, detail="Invalid run_type")
 
-    if max_candidates is not None and (max_candidates < 1 or max_candidates > 100):
-        raise HTTPException(status_code=400, detail="max_candidates must be between 1 and 100")
+    if max_candidates is not None and max_candidates < 1:
+        raise HTTPException(status_code=400, detail="max_candidates must be at least 1")
 
     conn = get_connection()
 
@@ -2372,10 +2382,17 @@ def _sync_pipeline_config_for_campaign(conn, campaign_id: int, target_profiles, 
     pipeline_dir = Path(config_row["pipeline_dir"])
     campaign_yaml_path = pipeline_dir / "campaign.yaml"
 
-    if target_profiles and campaign_yaml_path.exists():
+    if campaign_yaml_path.exists():
         try:
             config = yaml.safe_load(campaign_yaml_path.read_text(encoding="utf-8")) or {}
-            config.setdefault("filter", {})["max_candidates"] = int(target_profiles)
+            if target_profiles and int(target_profiles) > 0:
+                config.setdefault("filter", {})["max_candidates"] = int(target_profiles)
+                config.setdefault("ranking", {})["max_candidates"] = int(target_profiles)
+            else:
+                if "filter" in config and "max_candidates" in config["filter"]:
+                    del config["filter"]["max_candidates"]
+                if "ranking" in config and "max_candidates" in config["ranking"]:
+                    del config["ranking"]["max_candidates"]
             campaign_yaml_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
         except Exception:
             logger.exception("Failed to sync target_profiles into %s", campaign_yaml_path)

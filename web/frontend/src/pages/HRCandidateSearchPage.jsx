@@ -135,7 +135,7 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
   const [pipelineBusy, setPipelineBusy] = useState(false);
   const [pipelineError, setPipelineError] = useState("");
   const [pipelineMessage, setPipelineMessage] = useState("");
-  const [pipelineMaxCandidates, setPipelineMaxCandidates] = useState("100");
+  const [pipelineMaxCandidates, setPipelineMaxCandidates] = useState("");
   const [campaignArtifactStatus, setCampaignArtifactStatus] = useState({});
   const [campaignExportBusy, setCampaignExportBusy] = useState({});
   const [configVersions, setConfigVersions] = useState([]);
@@ -754,10 +754,15 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
       return;
     }
 
-    const parsedMax = Number.parseInt(pipelineMaxCandidates, 10);
-    if (!Number.isFinite(parsedMax) || parsedMax < 1 || parsedMax > 100) {
-      setPipelineError("Max candidates must be between 1 and 100.");
-      return;
+    let parsedMax = null;
+    const trimmed = (pipelineMaxCandidates || "").trim();
+    if (trimmed !== "") {
+      const num = Number.parseInt(trimmed, 10);
+      if (!Number.isFinite(num) || num < 1) {
+        setPipelineError("Max candidates must be at least 1.");
+        return;
+      }
+      parsedMax = num;
     }
 
     setPipelineError("");
@@ -770,7 +775,9 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
         parsedMax
       );
       setPipelineMessage(
-        `Pipeline started (run #${response.run_id}) with max_candidates=${parsedMax}. Please wait while it is running.`
+        parsedMax
+          ? `Pipeline started (run #${response.run_id}) with max_candidates=${parsedMax}. Please wait while it is running.`
+          : `Pipeline started (run #${response.run_id}) assessing all candidates. Please wait while it is running.`
       );
       const runs = await campaignApi.getPipelineRuns(pipelineCampaignId);
       setPipelineRuns(Array.isArray(runs) ? runs : []);
@@ -1150,18 +1157,17 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
                 )}
 
                 <label className="mt-4 block text-sm">
-                  <span className="mb-1 block font-medium text-slate-700">Max candidates for filter + rank (1-100)</span>
+                  <span className="mb-1 block font-medium text-slate-700">Max candidates for filter + rank (optional)</span>
                   <input
                     type="number"
                     min={1}
-                    max={100}
                     value={pipelineMaxCandidates}
-                    placeholder="100"
+                    placeholder="All candidates (leave blank for all)"
                     onChange={(event) => setPipelineMaxCandidates(event.target.value)}
                     className="w-full rounded-lg border border-slate-300 px-3 py-2.5 outline-none focus:border-indigo-600"
                   />
                   <p className="mt-1 text-xs text-slate-500">
-                    This value is for the number of candidates to be shortlisted and ranked by the AI pipeline. The default is 100, but you can reduce it for faster runs.
+                    Number of candidates to review and rank. Leave blank to assess all candidates returned by Exa, or set a number to cap the evaluation.
                   </p>
                 </label>
 
