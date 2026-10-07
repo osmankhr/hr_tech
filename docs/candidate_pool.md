@@ -258,7 +258,7 @@ Every LLM call in the pipeline (`generate_queries.py`, `filter.py`,
   critical since `filter.py`/ranking make **one call per candidate** (40–200+ per campaign).
 - **Multi-profile fallback chain**: `CLAUDE_PROFILES_DIR` (hard-coded
   `/home/osman/n8n-data/claude-profiles`, prod-server-specific) + `CLAUDE_PROFILE_CHAIN` (env
-  `CANDIDATE_POOL_CLAUDE_PROFILES`, default `"aiworkspacetr,richard"`) — tries isolated Claude CLI
+  `CANDIDATE_POOL_CLAUDE_PROFILES`, default `"richard"`) — tries isolated Claude CLI
   `$HOME` profiles in order, falling through only on retryable failures (timeout, non-zero exit,
   `is_error`), not on "binary missing".
 - **Thread-safe usage accumulator** (`_usage_totals` + `threading.Lock`) — tracks calls/errors/

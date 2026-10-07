@@ -40,7 +40,7 @@ CLAUDE_PROFILES_DIR = Path("/home/osman/n8n-data/claude-profiles")
 CLAUDE_PROFILE_CHAIN = tuple(
     part.strip()
     for part in os.environ.get(
-        "CANDIDATE_POOL_CLAUDE_PROFILES", "aiworkspacetr,richard"
+        "CANDIDATE_POOL_CLAUDE_PROFILES", "richard"
     ).split(",")
     if part.strip()
 )

@@ -149,7 +149,7 @@ exposed in the web UI, it's engineer-only tuning:
 | `CANDIDATE_POOL_CODEX_USERS` | `yigit-can-ozkaya` | Comma-separated identities auto-routed to the Codex CLI in `auto` mode. |
 | `CANDIDATE_POOL_COPILOT_USERS` | *(empty)* | Comma-separated identities auto-routed to Copilot in `auto` mode. |
 | `CANDIDATE_POOL_CODEX_MODEL` | `gpt-5.6-luna` | Model used for Codex-provider calls. |
-| `CANDIDATE_POOL_CLAUDE_PROFILES` | `aiworkspacetr,richard` | Ordered fallback chain of Claude CLI `$HOME` profiles under `/home/osman/n8n-data/claude-profiles/` (production server only). |
+| `CANDIDATE_POOL_CLAUDE_PROFILES` | `richard` | Ordered fallback chain of Claude CLI `$HOME` profiles under `/home/osman/n8n-data/claude-profiles/` (production server only). |
 | `CANDIDATE_POOL_TRIM_PROMPTS` | on | Shrinks per-candidate prompts: drops `highlights` already present in the text excerpt (and caps the rest), strips the designers' `raw_response` bookkeeping from the schema/policy sent to the scorer, and sends compact JSON. Roughly halves input tokens. Set to `0`/`off` to restore the old prompts. |
 | `CANDIDATE_POOL_TERSE_OUTPUT` | on | Appends short length limits (evidence/notes/summary) to the ranking scorer prompt; cuts its output tokens a lot. `0`/`off` disables. |
 | `CANDIDATE_POOL_CLAUDE_EFFORT` | `low` | `claude --effort` level for per-candidate calls (filter review, ranking scorer). `off` uses the CLI default. Claude CLI provider only. |
