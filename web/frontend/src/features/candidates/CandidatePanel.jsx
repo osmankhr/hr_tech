@@ -13,6 +13,7 @@ export function CandidatePanel({
   totalPages,
   onPageChange,
   headerAction = null,
+  headerExtra = null,
 }) {
   return (
     <div
@@ -23,13 +24,14 @@ export function CandidatePanel({
       }
     >
       {!full && (
-        <div className="mb-4 flex items-center justify-between">
+        <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h3 className="text-base font-semibold text-slate-900">{title}</h3>
             <p className="text-sm text-slate-500">{subtitle}</p>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-2">
+            {headerExtra}
             {headerAction}
             <Icons.Users className="h-5 w-5 text-slate-400" />
           </div>

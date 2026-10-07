@@ -124,6 +124,9 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
   const [usageSummary, setUsageSummary] = useState(null);
 
   const [dashboardCampaignId, setDashboardCampaignId] = useState("");
+  const [dashboardSelectedVersion, setDashboardSelectedVersion] = useState("");
+  const [dashboardConfigVersions, setDashboardConfigVersions] = useState([]);
+  const [dashboardConfigVersionsLoading, setDashboardConfigVersionsLoading] = useState(false);
   const [dashboardCandidates, setDashboardCandidates] = useState([]);
   const [dashboardPage, setDashboardPage] = useState(1);
   const [dashboardTotalPages, setDashboardTotalPages] = useState(0);
@@ -319,7 +322,8 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
       const data = await campaignApi.getCandidatesByCampaign(
         dashboardCampaignId,
         dashboardPage,
-        10
+        10,
+        dashboardSelectedVersion || null
       );
 
       const mapped = (data.items || []).map(mapCampaignCandidate);
@@ -330,7 +334,7 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
     } finally {
       setDashboardLoadingCandidates(false);
     }
-  }, [dashboardCampaignId, dashboardPage, setApiError]);
+  }, [dashboardCampaignId, dashboardPage, dashboardSelectedVersion, setApiError]);
 
   useEffect(() => {
     loadDashboardCandidates();
@@ -341,6 +345,35 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
       loadDashboardCandidates();
     }
   }, [view, dashboardCampaignId, loadDashboardCandidates]);
+
+  useEffect(() => {
+    if (!dashboardCampaignId) {
+      setDashboardConfigVersions([]);
+      setDashboardSelectedVersion("");
+      return;
+    }
+
+    let cancelled = false;
+    setDashboardConfigVersionsLoading(true);
+    campaignApi
+      .getConfigVersions(dashboardCampaignId)
+      .then((rows) => {
+        if (!cancelled) {
+          const mapped = Array.isArray(rows) ? rows.map(mapConfigVersionFromApi) : [];
+          setDashboardConfigVersions(mapped);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setDashboardConfigVersions([]);
+      })
+      .finally(() => {
+        if (!cancelled) setDashboardConfigVersionsLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [dashboardCampaignId]);
 
   useEffect(() => {
     if (!dashboardCampaignId) {
@@ -906,11 +939,13 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
 
   const changeDashboardCampaign = (campaign) => {
     setDashboardCampaignId(String(campaign.id));
+    setDashboardSelectedVersion("");
     setDashboardPage(1);
   };
 
   const openCampaignExplorer = (campaign) => {
     setDashboardCampaignId(String(campaign.id));
+    setDashboardSelectedVersion("");
     setDashboardPage(1);
     setView("dashboard");
   };
@@ -1070,22 +1105,58 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
                   ) : (
                     <CandidatePanel
                       title={`Candidates for ${selectedDashboardCampaign?.campaignName || "Selected Campaign"}`}
-                      subtitle="Campaign-scoped ranked candidates"
+                      subtitle={
+                        dashboardSelectedVersion
+                          ? `Viewing historical results for version v${dashboardSelectedVersion}`
+                          : "Campaign-scoped ranked candidates"
+                      }
                       candidates={dashboardCandidates}
                       onOpenCandidate={setSelectedCandidate}
                       onEditCandidate={setEditingCandidate}
                       page={dashboardPage}
                       totalPages={dashboardTotalPages}
                       onPageChange={setDashboardPage}
+                      headerExtra={
+                        dashboardConfigVersions.length > 0 ? (
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-xs font-medium text-slate-500">Version:</span>
+                            <select
+                              value={dashboardSelectedVersion}
+                              onChange={(event) => {
+                                setDashboardSelectedVersion(event.target.value);
+                                setDashboardPage(1);
+                              }}
+                              className="rounded-lg border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium text-slate-700 outline-none focus:border-indigo-600 focus:ring-1 focus:ring-indigo-600"
+                            >
+                              <option value="">Latest (Active DB)</option>
+                              {dashboardConfigVersions.map((ver) => (
+                                <option key={ver.id} value={ver.versionNumber}>
+                                  v{ver.versionNumber}
+                                  {ver.isCurrent ? " (Current)" : ""}
+                                  {typeof ver.rankedCandidates === "number"
+                                    ? ` • ${ver.rankedCandidates} ranked`
+                                    : ver.hasResults
+                                      ? " • has results"
+                                      : " • no runs"}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                        ) : null
+                      }
                       headerAction={
                         selectedDashboardCampaign && dashboardCandidates.length > 0 ? (
                           <a
-                            href={`${API_BASE_URL}/campaigns/${selectedDashboardCampaign.id}/export/excel?token=${encodeURIComponent(
+                            href={`${API_BASE_URL}/campaigns/${selectedDashboardCampaign.id}/export/excel?${
+                              dashboardSelectedVersion
+                                ? `version_number=${encodeURIComponent(dashboardSelectedVersion)}&`
+                                : ""
+                            }token=${encodeURIComponent(
                               localStorage.getItem("hr_auth_token") || ""
                             )}`}
                             className="rounded-xl border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
                           >
-                            Download Excel
+                            Download Excel{dashboardSelectedVersion ? ` (v${dashboardSelectedVersion})` : ""}
                           </a>
                         ) : null
                       }

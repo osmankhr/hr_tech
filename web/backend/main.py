@@ -1761,6 +1761,7 @@ def import_ranked_results(
 @app.get("/api/campaigns/{campaign_id}/export/excel")
 def export_campaign_excel(
     campaign_id: int,
+    version_number: Optional[int] = Query(default=None),
     token: Optional[str] = Query(default=None),
     authorization: Optional[str] = Header(default=None),
 ):
@@ -1780,17 +1781,27 @@ def export_campaign_excel(
         conn.close()
         raise HTTPException(status_code=404, detail="Campaign not found")
 
-    config_row = conn.execute("""
-        SELECT pipeline_dir
-        FROM pipeline_campaign_configs
-        WHERE campaign_id = ?
-    """, (campaign_id,)).fetchone()
+    if version_number is not None:
+        version_row = conn.execute("""
+            SELECT pipeline_dir
+            FROM pipeline_config_versions
+            WHERE campaign_id = ? AND version_number = ?
+        """, (campaign_id, version_number)).fetchone()
+        pipeline_dir = Path(version_row["pipeline_dir"]) if version_row else None
+    else:
+        config_row = conn.execute("""
+            SELECT pipeline_dir
+            FROM pipeline_campaign_configs
+            WHERE campaign_id = ?
+        """, (campaign_id,)).fetchone()
+        pipeline_dir = Path(config_row["pipeline_dir"]) if config_row else None
+
     conn.close()
 
-    if not config_row:
+    if not pipeline_dir:
         raise HTTPException(status_code=404, detail="Pipeline config not found for this campaign")
 
-    output_dir = Path(config_row["pipeline_dir"]) / "output"
+    output_dir = pipeline_dir / "output"
     xlsx_files = sorted(
         output_dir.glob("shortlist_*.xlsx"),
         key=lambda p: p.stat().st_mtime,
@@ -1801,7 +1812,8 @@ def export_campaign_excel(
         raise HTTPException(status_code=404, detail="No Excel export found. Run the pipeline first.")
 
     latest = xlsx_files[0]
-    download_name = f"{campaign['campaign_code']}_candidates.xlsx"
+    suffix = f"_v{version_number}" if version_number is not None else ""
+    download_name = f"{campaign['campaign_code']}{suffix}_candidates.xlsx"
 
     return FileResponse(
         path=latest,
@@ -2128,6 +2140,7 @@ def list_campaign_candidates(
     campaign_id: int,
     page: int = 1,
     page_size: int = 10,
+    version_number: Optional[int] = Query(default=None),
     current_user=Depends(get_current_user),
 ):
     if page < 1:
@@ -2144,6 +2157,130 @@ def list_campaign_candidates(
     if not _get_owned_campaign(conn, campaign_id, current_user):
         conn.close()
         raise HTTPException(status_code=404, detail="Campaign not found")
+
+    if version_number is not None:
+        version_row = conn.execute(
+            """
+            SELECT id, version_number, pipeline_dir
+            FROM pipeline_config_versions
+            WHERE campaign_id = ? AND version_number = ?
+            """,
+            (campaign_id, version_number),
+        ).fetchone()
+
+        if not version_row:
+            conn.close()
+            raise HTTPException(status_code=404, detail="Config version not found")
+
+        pipeline_dir = Path(version_row["pipeline_dir"])
+        ranked_file = pipeline_dir / "data" / "ranked_results.json"
+
+        candidates_raw = []
+        if ranked_file.exists():
+            try:
+                data = json.loads(ranked_file.read_text(encoding="utf-8"))
+                if isinstance(data, list):
+                    candidates_raw = data
+            except Exception:
+                logger.exception("Failed to read ranked_results.json for version %d", version_number)
+
+        total_count = len(candidates_raw)
+        paged_raw = candidates_raw[offset : offset + page_size]
+
+        candidates = []
+        for idx, item in enumerate(paged_raw):
+            if not isinstance(item, dict):
+                continue
+            profile_url = str(item.get("url") or "").strip()
+            email = str(item.get("email") or "").strip().lower()
+            full_name = str(item.get("title") or "").strip()
+            job_title = str(item.get("extracted_title") or "").strip() or full_name
+            source = str(item.get("source") or "candidate_pool")
+            location = str(item.get("location") or "").strip()
+            recommendation = str((item.get("ai_review") or {}).get("recommendation") or "PENDING").upper()
+            candidate_status = _candidate_status_from_review(recommendation)
+            english_confidence = str(item.get("english_confidence") or "").strip().upper() or None
+            english_confidence_reason = str(item.get("english_confidence_reason") or "").strip() or None
+
+            manual = (item.get("ranking") or {}).get("manual") or {}
+            agent = (item.get("ranking") or {}).get("agent") or {}
+            manual_score = manual.get("manual_score")
+            score_value = manual_score if manual_score is not None else (item.get("score") or 0)
+            try:
+                score_int = int(round(float(score_value)))
+            except (TypeError, ValueError):
+                score_int = 0
+            score_int = max(0, min(100, score_int))
+
+            years_experience = _extract_years_experience(str(item.get("text") or ""))
+
+            db_match = None
+            if profile_url:
+                db_match = conn.execute(
+                    "SELECT id, candidate_code, notes, last_updated FROM candidates WHERE profile_url = ?",
+                    (profile_url,),
+                ).fetchone()
+            if not db_match and email:
+                db_match = conn.execute(
+                    "SELECT id, candidate_code, notes, last_updated FROM candidates WHERE email = ?",
+                    (email,),
+                ).fetchone()
+
+            cand_id = db_match["id"] if db_match else f"v{version_number}-{offset + idx + 1}"
+            cand_code = db_match["candidate_code"] if db_match else f"CAN-v{version_number}-{offset + idx + 1:03d}"
+            cand_notes = db_match["notes"] if db_match else ""
+            cand_last_updated = db_match["last_updated"] if db_match else ""
+
+            skills_raw = item.get("skills") or []
+            if isinstance(skills_raw, list):
+                skills_str = ", ".join(str(s) for s in skills_raw if s)
+            else:
+                skills_str = str(skills_raw)
+
+            ranking_obj = item.get("ranking") or {}
+            ranking_category = ranking_obj.get("category") or ("ACCEPT" if recommendation == "ACCEPT" else "REVIEW")
+            ranking_rank = ranking_obj.get("rank") or (offset + idx + 1)
+            feature_contribs = ranking_obj.get("feature_contributions") or {}
+
+            candidates.append({
+                "id": cand_id,
+                "candidate_code": cand_code,
+                "full_name": full_name,
+                "email": email,
+                "current_title": job_title,
+                "location": location,
+                "source": source,
+                "profile_url": profile_url,
+                "score": score_int,
+                "status": candidate_status,
+                "years_experience": years_experience,
+                "english_confidence": english_confidence,
+                "english_confidence_reason": english_confidence_reason,
+                "last_updated": cand_last_updated,
+                "notes": cand_notes,
+                "skills": skills_str,
+                "ranking": {
+                    "manual_score": manual_score,
+                    "category": ranking_category,
+                    "rank": ranking_rank,
+                    "feature_contributions": feature_contribs,
+                    "agent": agent,
+                    "manual": manual,
+                },
+            })
+
+        conn.close()
+        total_pages = (total_count + page_size - 1) // page_size if total_count else 0
+        return {
+            "items": candidates,
+            "pagination": {
+                "page": page,
+                "page_size": page_size,
+                "total_items": total_count,
+                "total_pages": total_pages,
+            },
+            "version_number": version_number,
+        }
 
     total_count = conn.execute(
         """

@@ -103,10 +103,12 @@ export const campaignApi = {
     return httpClient.post(`/campaigns/${id}/pipeline/run`, formData);
   },
 
-  getCandidatesByCampaign(id, page = 1, pageSize = 10) {
-    return httpClient.get(
-      `/campaigns/${id}/candidates?page=${page}&page_size=${pageSize}`
-    );
+  getCandidatesByCampaign(id, page = 1, pageSize = 10, versionNumber = null) {
+    let url = `/campaigns/${id}/candidates?page=${page}&page_size=${pageSize}`;
+    if (versionNumber !== null && versionNumber !== undefined && versionNumber !== "") {
+      url += `&version_number=${encodeURIComponent(versionNumber)}`;
+    }
+    return httpClient.get(url);
   },
 
   async exportRankedCsv(id) {
