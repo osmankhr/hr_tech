@@ -36,3 +36,6 @@ candidate_pool/uv.lock
 
 # OS
 .DS_Store
+
+# Bias audit transient outputs
+candidate_pool/bias_audit_reports/

@@ -336,6 +336,19 @@ that correctly skips braces inside quoted strings and handles arbitrary nesting 
 grading formula, output schemas, prompt override resolution). Read it directly for ranking-specific
 deep dives instead of duplicating further here.
 
+### 4.10 `scripts/audit_bias.py` — demographic bias audit suite
+A standalone counterfactual perturbation audit tool for evaluating demographic and religious
+fairness in the AI filter and ranking stages.
+- Holds candidate skills, work history, and education constant while varying names, gender cues,
+  ethnicity, and explicit religious markers (e.g. *Muhammed*, *Fatima*, *Christian*, *David Cohen*).
+- Calibrates against a demographically neutral baseline (`Candidate A`) across $N$ repeats to establish
+  the empirical stochastic noise floor ($\sigma$, noise band) before evaluating perturbations.
+- Measures filter recommendation flips (`ACCEPT`/`PENDING`/`REJECT`), score divergence ($\Delta \text{score}$
+  vs baseline), and qualitative reasoning differences across qualification tiers (high-fit vs borderline).
+- Exports recruiter-readable Markdown reports (`docs/bias_audit/latest_bias_audit_report.md`) plus raw
+  JSON and CSV data for compliance audits.
+- CLI: `python scripts/audit_bias.py [--model <model>] [--tiers high_fit,borderline_fit] [--dry-run]`
+
 ---
 
 ## 5. Notable conventions & gotchas (for future work in this repo)
