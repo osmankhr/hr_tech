@@ -503,6 +503,14 @@ def _call_claude_cli(
     env = dict(os.environ)
     if home is not None:
         env["HOME"] = str(home)
+        # Long-lived token (claude setup-token) beats the ~30-day browser login.
+        token_file = home / "oauth-token"
+        try:
+            token = token_file.read_text().strip() if token_file.is_file() else ""
+        except OSError:
+            token = ""
+        if token:
+            env["CLAUDE_CODE_OAUTH_TOKEN"] = token
 
     try:
         result = subprocess.run(
