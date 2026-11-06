@@ -26,9 +26,11 @@ filter:
   max_candidates: 100
   model: claude-sonnet-4-5
 
-# Uncomment to deduplicate against an existing pool:
+# Uncomment to deduplicate against an existing pool or exclude previously contacted candidates:
 # dedup:
 #   existing_pool_path: "input/existing_pool.json"
+#   contacted_candidates_path: "input/contacted_candidates.xlsx"  # Excel (.xlsx) or CSV with "Candidate Name"
+
 
 output:
   formats: [excel, csv, json]

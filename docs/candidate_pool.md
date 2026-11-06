@@ -131,6 +131,7 @@ campaigns/<name>/
 | `filter.max_workers` | filter.py | 6 |
 | `filter.model` | filter.py | `"claude-sonnet-5"` |
 | `dedup.existing_pool_path` | search.py | none (relative to campaign_dir) |
+| `dedup.contacted_candidates_path` | search.py / contacted_candidates.py | none (falls back to `input/contacted_candidates.xlsx` or env `CONTACTED_CANDIDATES_PATH`) |
 | `ranking.enabled` | run_campaign.py | `true` |
 | `ranking.model` | ranking/pipeline.py | `filter.model` |
 | `ranking.max_features` | ranking/pipeline.py | 10 |
@@ -183,6 +184,9 @@ sections).
 **`class ExaSearcher`** (name is legacy; supports 3 providers via `search.provider`):
 - Provider init requires the matching API key: `EXA_API_KEY` / `DATALABS_API_KEY` / `APOLLO_API_KEY`.
 - `_load_existing_pool()` — optional dedup against `dedup.existing_pool_path`.
+- `contacted_candidates.py` / `_load_contacted_store()` — eliminates previously contacted candidates from Excel (`.xlsx`) or CSV based on `Candidate Name` (with diacritic-tolerant Turkish/English normalization) and profile URLs.
+- Replenishment loop — after eliminating contacted candidates, generates single search queries one by one using `QueryGenerator.generate_single_query` to search Exa until candidate count is `>=` the initial count.
+
 - `_build_pdl_sql_queries` / `_build_apollo_query_params` — hard-coded ML/AI-hiring-flavored
   fallback query templates (used only if `campaign.yaml` doesn't set `pdl_queries`/`apollo_queries`
   explicitly) — domain-specific boilerplate.

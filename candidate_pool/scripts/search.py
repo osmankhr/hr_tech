@@ -16,6 +16,10 @@ from dotenv import load_dotenv
 from exa_py import Exa
 
 import pipeline_status
+from contacted_candidates import (
+    ContactedCandidatesStore,
+    resolve_contacted_candidates_path,
+)
 
 load_dotenv()
 
@@ -23,7 +27,14 @@ logger = logging.getLogger(__name__)
 
 
 class ExaSearcher:
-    def __init__(self, campaign_dir: Path, config: dict[str, Any]) -> None:
+    def __init__(
+        self,
+        campaign_dir: Path,
+        config: dict[str, Any],
+        *,
+        query_generator: Any | None = None,
+        contacted_store: ContactedCandidatesStore | None = None,
+    ) -> None:
         self.campaign_dir = campaign_dir
         self.config = config
         self.search_cfg = config.get("search", {})
@@ -61,6 +72,41 @@ class ExaSearcher:
             )
 
         self._existing_urls: set[str] = self._load_existing_pool()
+        self._contacted_store: ContactedCandidatesStore | None = contacted_store
+        self._query_generator = query_generator
+
+    @property
+    def contacted_store(self) -> ContactedCandidatesStore:
+        if getattr(self, "_contacted_store", None) is None:
+            if hasattr(self, "campaign_dir") and hasattr(self, "config"):
+                self._contacted_store = self._load_contacted_store()
+            else:
+                self._contacted_store = ContactedCandidatesStore()
+        return self._contacted_store  # type: ignore[return-value]
+
+    @contacted_store.setter
+    def contacted_store(self, value: ContactedCandidatesStore) -> None:
+        self._contacted_store = value
+
+    def _load_contacted_store(self) -> ContactedCandidatesStore:
+        path = resolve_contacted_candidates_path(self.campaign_dir, self.config)
+        if path:
+            logger.info("Using contacted candidates file: %s", path)
+            return ContactedCandidatesStore(path)
+        return ContactedCandidatesStore()
+
+    @property
+    def query_generator(self) -> Any | None:
+        if self._query_generator is None:
+            try:
+                from generate_queries import QueryGenerator
+
+                self._query_generator = QueryGenerator(self.campaign_dir, self.config)
+            except Exception as e:
+                logger.warning("Could not initialize QueryGenerator for replenishment: %s", e)
+                self._query_generator = None
+        return self._query_generator
+
 
     def _load_existing_pool(self) -> set[str]:
         pool_path_str = self.dedup_cfg.get("existing_pool_path")
@@ -592,10 +638,116 @@ class ExaSearcher:
                 detail=f"{loc_name} · query {query_index} of {len(queries)}",
             )
 
+        # Filter out previously contacted candidates and replenish if needed
+        if not self.contacted_store.is_empty():
+            initial_count = len(candidates)
+            retained_candidates: list[dict[str, Any]] = []
+            eliminated_count = 0
+            for cand in candidates:
+                if self.contacted_store.is_contacted(cand):
+                    eliminated_count += 1
+                    logger.info(
+                        "[%s] Eliminated contacted candidate: %r (%s)",
+                        loc_name,
+                        cand.get("title"),
+                        cand.get("url"),
+                    )
+                else:
+                    retained_candidates.append(cand)
+
+            if eliminated_count > 0:
+                logger.info(
+                    "[%s] Contacted filter: eliminated %d of %d candidates (retained: %d)",
+                    loc_name,
+                    eliminated_count,
+                    initial_count,
+                    len(retained_candidates),
+                )
+
+            target_count = initial_count
+            queries_used = list(queries)
+
+            if self.provider == "exa" and len(retained_candidates) < target_count:
+                qgen = self.query_generator
+                if qgen:
+                    logger.info(
+                        "[%s] Replenishing candidate pool: %d retained, target is %d+ candidates",
+                        loc_name,
+                        len(retained_candidates),
+                        target_count,
+                    )
+                    consecutive_empty = 0
+                    max_replenish = self.search_cfg.get("max_replenish_queries", 15)
+                    replenish_iter = 0
+
+                    while (
+                        len(retained_candidates) < target_count
+                        and replenish_iter < max_replenish
+                    ):
+                        replenish_iter += 1
+                        new_query = qgen.generate_single_query(
+                            loc_name,
+                            hint=location.get("hint"),
+                            existing_queries=[str(q) for q in queries_used if isinstance(q, str)],
+                        )
+                        if not new_query or new_query in queries_used:
+                            logger.warning(
+                                "[%s] Could not generate distinct replenishment query; stopping replenishment",
+                                loc_name,
+                            )
+                            break
+
+                        queries_used.append(new_query)
+                        batch = self._search_query(str(new_query), loc_name, seen_urls)
+                        added = 0
+                        for cand in batch:
+                            if self.contacted_store.is_contacted(cand):
+                                logger.info(
+                                    "[%s] Candidate %r matched contacted list during replenishment; skipping",
+                                    loc_name,
+                                    cand.get("title"),
+                                )
+                            else:
+                                retained_candidates.append(cand)
+                                added += 1
+
+                        logger.info(
+                            "[%s] Replenishment query %d (%r): +%d valid candidates (current %d / target %d)",
+                            loc_name,
+                            replenish_iter,
+                            new_query,
+                            added,
+                            len(retained_candidates),
+                            target_count,
+                        )
+
+                        pipeline_status.write(
+                            self.campaign_dir,
+                            "search",
+                            current=progress_offset + len(queries_used),
+                            total=progress_total if progress_total is not None else len(queries_used),
+                            found=found_offset + len(retained_candidates),
+                            detail=f"{loc_name} · replenishing ({len(retained_candidates)}/{target_count})",
+                        )
+
+                        if added == 0:
+                            consecutive_empty += 1
+                            if consecutive_empty >= 3:
+                                logger.warning(
+                                    "[%s] 3 consecutive replenishment queries returned 0 candidates; stopping replenishment",
+                                    loc_name,
+                                )
+                                break
+                        else:
+                            consecutive_empty = 0
+
+            return retained_candidates, queries_used
+
         return candidates, queries
 
     def run(self) -> dict[str, list[dict[str, Any]]]:
         results: dict[str, list[dict[str, Any]]] = {}
+        all_queries_used: dict[str, list[Any]] = {}
 
         location_queries = [
             (location, self._load_queries_for_location(location))
@@ -623,6 +775,7 @@ class ExaSearcher:
                 found_offset=total_found,
             )
             results[loc_name] = candidates
+            all_queries_used[loc_name] = queries_used
             completed_queries += len(queries_used)
             total_found += len(candidates)
 
@@ -647,4 +800,23 @@ class ExaSearcher:
 
             logger.info("[%s] Saved %d candidates", loc_name, len(candidates))
 
+        # Update generated_queries.yaml if replenishment added new queries
+        gen_queries_path = self.campaign_dir / "data" / "generated_queries.yaml"
+        if gen_queries_path.exists():
+            try:
+                with open(gen_queries_path) as f:
+                    saved_queries = yaml.safe_load(f) or {}
+                modified = False
+                for loc, q_list in all_queries_used.items():
+                    if saved_queries.get(loc) != q_list:
+                        saved_queries[loc] = q_list
+                        modified = True
+                if modified:
+                    with open(gen_queries_path, "w") as f:
+                        yaml.dump(saved_queries, f, allow_unicode=True, default_flow_style=False)
+                    logger.info("Updated generated_queries.yaml with replenishment queries")
+            except Exception as e:
+                logger.warning("Could not update generated_queries.yaml: %s", e)
+
         return results
+

@@ -41,6 +41,29 @@ Rules:
   (e.g. prefer "data scientist Turkey" over "data scientist Istanbul" to cast a wider net)
 - HARD EXCLUSION: Every query must explicitly include a negative employment signal indicating that the target candidate does not work for ING (e.g. "not working at ING", "does not work for ING", "excluding ING employees"). This exclusion should be expressed in the query itself and must not otherwise restrict relevant roles, skills, industries, or employers."""
 
+_SINGLE_QUERY_PROMPT_TEMPLATE = """\
+## Job Description
+
+{job_description}
+
+## Filtering Criteria
+
+{filter_criteria}
+
+{seed_cv_section}## Task
+
+Generate exactly 1 new and diverse Exa.ai search query to find candidate profiles matching the role above.
+Target location / audience: **{location_name}**{location_hint}
+
+{existing_queries_section}Rules:
+- Generate a fresh angle (different job titles, skill combinations, or seniority signals) not covered by previous queries
+- Write the query as a natural language phrase that would appear verbatim on a professional profile
+- Do NOT repeat or slightly rephrase any of the previous queries
+- Do NOT include location words that might over-restrict results unless the location is a country
+  (e.g. prefer "data scientist Turkey" over "data scientist Istanbul" to cast a wider net)
+- HARD EXCLUSION: Every query must explicitly include a negative employment signal indicating that the target candidate does not work for ING (e.g. "not working at ING", "does not work for ING", "excluding ING employees"). This exclusion should be expressed in the query itself and must not otherwise restrict relevant roles, skills, industries, or employers."""
+
+
 _SEED_CV_SECTION = """\
 ## Seed CVs (ideal candidate examples)
 
@@ -102,6 +125,37 @@ def _call_model(prompt: str, model: str) -> list[str] | None:
         return None
 
 
+def _call_model_single(prompt: str, model: str) -> str | None:
+    output = call_model_text(
+        prompt=prompt,
+        model=model,
+        system=_SYSTEM_INSTRUCTIONS,
+        timeout=120,
+    )
+    if not output:
+        return None
+
+    # Check for JSON array first
+    match = re.search(r"\[.*\]", output, re.DOTALL)
+    if match:
+        try:
+            queries = json.loads(match.group())
+            items = [q.strip() for q in queries if isinstance(q, str) and q.strip()]
+            if items:
+                return items[0]
+        except json.JSONDecodeError:
+            pass
+
+    # Fallback: check if the response is a single string or JSON string
+    cleaned = output.strip().strip('"').strip("'").strip("`").strip()
+    if cleaned and "\n" not in cleaned and len(cleaned) < 300:
+        return cleaned
+
+    logger.warning("Could not parse single query from output: %s", output[:300])
+    return None
+
+
+
 class QueryGenerator:
     def __init__(self, campaign_dir: Path, config: dict[str, Any]) -> None:
         self.campaign_dir = campaign_dir
@@ -152,6 +206,57 @@ class QueryGenerator:
         for i, q in enumerate(queries, 1):
             logger.info("  [%d] %s", i, q)
         return queries
+
+    def _build_single_query_prompt(
+        self,
+        loc_name: str,
+        hint: str | None,
+        existing_queries: list[str] | None = None,
+    ) -> str:
+        hint_str = f" ({hint})" if hint else ""
+
+        if self.seed_cvs:
+            excerpts = "\n\n".join(
+                f"### {name}\n{text}" for name, text in self.seed_cvs
+            )
+            seed_section = _SEED_CV_SECTION.format(excerpts=excerpts)
+        else:
+            seed_section = ""
+
+        existing_section = ""
+        if existing_queries:
+            query_bullets = "\n".join(f"- {q}" for q in existing_queries)
+            existing_section = (
+                f"## Previous Queries Already Used\n\n"
+                f"{query_bullets}\n\n"
+                f"Important: Do NOT duplicate or closely rephrase any of the above queries. Target a distinct new angle.\n\n"
+            )
+
+        return _SINGLE_QUERY_PROMPT_TEMPLATE.format(
+            job_description=self.job_description,
+            filter_criteria=self.filter_criteria,
+            seed_cv_section=seed_section,
+            location_name=loc_name,
+            location_hint=hint_str,
+            existing_queries_section=existing_section,
+        )
+
+    def generate_single_query(
+        self,
+        loc_name: str,
+        hint: str | None = None,
+        existing_queries: list[str] | None = None,
+    ) -> str | None:
+        """Generate exactly one new Exa query for the location to replenish candidate pool."""
+        prompt = self._build_single_query_prompt(loc_name, hint, existing_queries=existing_queries)
+        logger.info("Generating 1 replenishment query for location: %s", loc_name)
+        query = _call_model_single(prompt, self.model)
+        if query:
+            logger.info("Generated replenishment query for %s: %r", loc_name, query)
+        else:
+            logger.warning("Single query generation failed for %s", loc_name)
+        return query
+
 
     def run(self, force: bool = False) -> dict[str, list[str]]:
         if self._out_path.exists() and not force:
