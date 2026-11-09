@@ -121,7 +121,10 @@ campaigns/<name>/
 | `name` | run_campaign.py | — |
 | `locations[].name` / `.hint` | generate_queries, search | required list |
 | `locations[].queries` / `.pdl_queries` / `.apollo_queries` | search.py | manual override, skips AI query gen |
-| `search.provider` / `search_api` / `api` | search.py | `"exa"` (or `peopledatalabs`\|`apollo`) |
+| `search.provider` / `search_api` / `api` | search.py | `"exa"` (or `peopledatalabs`\|`apollo`\|`github`\|`huggingface`\|`kaggle`\|`multi`) |
+| `search.platforms` | search.py / platform_searchers.py | optional list (`[github, huggingface, kaggle]`) to also source active candidates from community platforms |
+| `search.activity_days` | search.py / platform_searchers.py | `180` (only include candidates active within the last N days) |
+| `search.num_results_per_platform` | search.py / platform_searchers.py | `15` |
 | `search.num_queries_per_location` | generate_queries.py | 6 |
 | `search.num_results_per_query` | search.py | 30 |
 | `search.category` | search.py (Exa only) | `"people"` |
@@ -180,9 +183,10 @@ sections).
   explicitly negate "does not work at ING" — business-specific logic baked into shared code, not
   general-purpose. Flag before reusing this pipeline for a different hiring org.
 
-### 4.3 `scripts/search.py` — multi-provider search
-**`class ExaSearcher`** (name is legacy; supports 3 providers via `search.provider`):
-- Provider init requires the matching API key: `EXA_API_KEY` / `DATALABS_API_KEY` / `APOLLO_API_KEY`.
+### 4.3 `scripts/search.py` & `scripts/platform_searchers.py` — multi-provider & community platform search
+**`class ExaSearcher`** (supports `exa`, `peopledatalabs`, `apollo`, `github`, `huggingface`, `kaggle`, `multi` via `search.provider`, plus additive `search.platforms`):
+- Provider init requires the matching API key for commercial providers (`EXA_API_KEY` / `DATALABS_API_KEY` / `APOLLO_API_KEY`). Community platforms (`github`, `huggingface`, `kaggle`) work with optional `GITHUB_TOKEN`, `HF_TOKEN`, and `KAGGLE_USERNAME`/`KAGGLE_KEY` env vars.
+- `platform_searchers.py` — implements `GitHubCandidateSearcher`, `HuggingFaceCandidateSearcher`, `KaggleCandidateSearcher`, and `MultiPlatformCandidateSearcher` with activity recency verification (`activity_days`, default 180 days), SSRF host allowlisting, identifier validation, and ING employee exclusion.
 - `_load_existing_pool()` — optional dedup against `dedup.existing_pool_path`.
 - `contacted_candidates.py` / `_load_contacted_store()` — eliminates previously contacted candidates from Excel (`.xlsx`) or CSV based on `Candidate Name` (with diacritic-tolerant Turkish/English normalization) and profile URLs.
 - Replenishment loop — after eliminating contacted candidates, generates single search queries one by one using `QueryGenerator.generate_single_query` to search Exa until candidate count is `>=` the initial count.

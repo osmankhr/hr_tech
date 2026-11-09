@@ -10,6 +10,10 @@ locations:
     hint: "Focus on Turkish diaspora — professionals with Turkish names or Turkish university degrees"
 
 search:
+  # provider: exa               # exa | peopledatalabs | apollo | github | huggingface | kaggle | multi
+  # platforms: [github, huggingface, kaggle]  # Optional: also source active candidates from community platforms
+  # activity_days: 180          # Only include community candidates active in the last N days
+  # num_results_per_platform: 15
   num_queries_per_location: 6   # Claude generates this many queries per location
   num_results_per_query: 30
   category: people

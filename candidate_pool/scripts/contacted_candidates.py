@@ -67,6 +67,12 @@ URL_COLUMN_ALIASES = [
     "url",
     "linkedin",
     "linkedin_url",
+    "github",
+    "github_url",
+    "huggingface",
+    "huggingface_url",
+    "kaggle",
+    "kaggle_url",
     "profile_url",
     "profile",
     "link",
@@ -268,6 +274,14 @@ class ContactedCandidatesStore:
                 slug_nodash = "".join(words)
                 slug_pattern = rf"/(in|pub)/({re.escape(slug_dash)}|{re.escape(slug_nodash)})(-[0-9a-z]+)?(/|\?|$)"
                 if re.search(slug_pattern, cand_url_lower):
+                    return True
+
+                # Community platform handle match (github.com/<slug>, huggingface.co/<slug>, kaggle.com/<slug>)
+                platform_slug_pattern = (
+                    rf"(github\.com|huggingface\.co|kaggle\.com)/"
+                    rf"({re.escape(slug_dash)}|{re.escape(slug_nodash)})(/|\?|$)"
+                )
+                if re.search(platform_slug_pattern, cand_url_lower):
                     return True
 
 

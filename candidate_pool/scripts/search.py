@@ -20,6 +20,11 @@ from contacted_candidates import (
     ContactedCandidatesStore,
     resolve_contacted_candidates_path,
 )
+from platform_searchers import (
+    DEFAULT_ACTIVITY_DAYS,
+    SUPPORTED_COMMUNITY_PLATFORMS,
+    MultiPlatformCandidateSearcher,
+)
 
 load_dotenv()
 
@@ -52,6 +57,24 @@ class ExaSearcher:
         self.exa: Exa | None = None
         self.pdl_api_key: str | None = None
         self.apollo_api_key: str | None = None
+        self._platform_searcher: MultiPlatformCandidateSearcher | None = None
+
+        # Configure activity verification & community platform settings
+        self.activity_days: int = int(
+            self.search_cfg.get("activity_days", DEFAULT_ACTIVITY_DAYS)
+        )
+        self.num_results_per_platform: int = int(
+            self.search_cfg.get("num_results_per_platform", min(self.num_results, 15))
+        )
+        self.require_recent_activity: bool = bool(
+            self.search_cfg.get("require_recent_activity", True)
+        )
+
+        configured_platforms = self.search_cfg.get("platforms") or []
+        if isinstance(configured_platforms, str):
+            configured_platforms = [
+                p.strip() for p in configured_platforms.split(",") if p.strip()
+            ]
 
         if self.provider == "exa":
             api_key = os.environ.get("EXA_API_KEY")
@@ -66,14 +89,45 @@ class ExaSearcher:
             self.apollo_api_key = os.environ.get("APOLLO_API_KEY")
             if not self.apollo_api_key:
                 raise ValueError("APOLLO_API_KEY not set in environment")
+        elif self.provider in SUPPORTED_COMMUNITY_PLATFORMS or self.provider == "multi":
+            # Optional Exa client for Kaggle domain-scoped fallback if EXA_API_KEY is available
+            api_key = os.environ.get("EXA_API_KEY")
+            if api_key:
+                self.exa = Exa(api_key)
+            if self.provider == "multi":
+                configured_platforms = configured_platforms or [
+                    "github",
+                    "huggingface",
+                    "kaggle",
+                ]
+            else:
+                configured_platforms = [self.provider]
         else:
             raise ValueError(
-                "search.provider must be one of: exa, peopledatalabs, apollo"
+                "search.provider must be one of: exa, peopledatalabs, apollo, github, huggingface, kaggle, multi"
+            )
+
+        if configured_platforms:
+            self._platform_searcher = MultiPlatformCandidateSearcher(
+                platforms=list(configured_platforms),
+                activity_days=self.activity_days,
+                num_results_per_platform=self.num_results_per_platform,
+                require_recent_activity=self.require_recent_activity,
+                exa_client=self.exa,
             )
 
         self._existing_urls: set[str] = self._load_existing_pool()
         self._contacted_store: ContactedCandidatesStore | None = contacted_store
         self._query_generator = query_generator
+
+    @property
+    def platform_searcher(self) -> MultiPlatformCandidateSearcher | None:
+        """Return the configured MultiPlatformCandidateSearcher instance, if any."""
+        return getattr(self, "_platform_searcher", None)
+
+    @platform_searcher.setter
+    def platform_searcher(self, value: MultiPlatformCandidateSearcher | None) -> None:
+        self._platform_searcher = value
 
     @property
     def contacted_store(self) -> ContactedCandidatesStore:
@@ -593,13 +647,66 @@ class ExaSearcher:
     def _load_queries_for_location(self, location: dict[str, Any]) -> list[Any]:
         loc_name = location["name"]
 
-        if self.provider == "exa":
+        if (
+            self.provider == "exa"
+            or self.provider in SUPPORTED_COMMUNITY_PLATFORMS
+            or self.provider == "multi"
+        ):
             return location.get("queries") or self._load_generated_queries(loc_name)
 
         if self.provider == "peopledatalabs":
             return location.get("pdl_queries") or self._build_pdl_sql_queries(loc_name)
 
         return location.get("apollo_queries") or self._build_apollo_query_params(loc_name)
+
+    def _execute_query_batch(
+        self, query: Any, loc_name: str, seen_urls: set[str]
+    ) -> list[dict[str, Any]]:
+        """Dispatch a single query across the primary provider and any configured community platforms."""
+        batch: list[dict[str, Any]] = []
+
+        if self.provider == "exa":
+            batch.extend(self._search_query(str(query), loc_name, seen_urls))
+            if self.platform_searcher is not None:
+                batch.extend(
+                    self.platform_searcher.search_query(
+                        str(query),
+                        loc_name,
+                        seen_urls,
+                        existing_urls=self._existing_urls,
+                    )
+                )
+        elif (
+            self.provider in SUPPORTED_COMMUNITY_PLATFORMS
+            or self.provider == "multi"
+        ):
+            if self.platform_searcher is not None:
+                batch.extend(
+                    self.platform_searcher.search_query(
+                        str(query),
+                        loc_name,
+                        seen_urls,
+                        existing_urls=self._existing_urls,
+                    )
+                )
+        elif self.provider == "peopledatalabs":
+            batch.extend(self._search_pdl_query(str(query), loc_name, seen_urls))
+            if self.platform_searcher is not None:
+                batch.extend(
+                    self.platform_searcher.search_query(
+                        str(query),
+                        loc_name,
+                        seen_urls,
+                        existing_urls=self._existing_urls,
+                    )
+                )
+        else:
+            if not isinstance(query, dict):
+                logger.warning("[%s][apollo] Skipping non-dict query: %r", loc_name, query)
+            else:
+                batch.extend(self._search_apollo_query(query, loc_name, seen_urls))
+
+        return batch
 
     def search_location(
         self,
@@ -617,16 +724,7 @@ class ExaSearcher:
 
         for query_index, query in enumerate(queries, 1):
             logger.info("[%s][%s] Searching: %r", loc_name, self.provider, query)
-            if self.provider == "exa":
-                batch = self._search_query(str(query), loc_name, seen_urls)
-            elif self.provider == "peopledatalabs":
-                batch = self._search_pdl_query(str(query), loc_name, seen_urls)
-            else:
-                if not isinstance(query, dict):
-                    logger.warning("[%s][apollo] Skipping non-dict query: %r", loc_name, query)
-                    batch = []
-                else:
-                    batch = self._search_apollo_query(query, loc_name, seen_urls)
+            batch = self._execute_query_batch(query, loc_name, seen_urls)
             candidates.extend(batch)
             logger.info("[%s] +%d new (total %d)", loc_name, len(batch), len(candidates))
             pipeline_status.write(
@@ -667,7 +765,12 @@ class ExaSearcher:
             target_count = initial_count
             queries_used = list(queries)
 
-            if self.provider == "exa" and len(retained_candidates) < target_count:
+            supports_replenishment = (
+                self.provider == "exa"
+                or self.provider in SUPPORTED_COMMUNITY_PLATFORMS
+                or self.provider == "multi"
+            )
+            if supports_replenishment and len(retained_candidates) < target_count:
                 qgen = self.query_generator
                 if qgen:
                     logger.info(
@@ -698,7 +801,7 @@ class ExaSearcher:
                             break
 
                         queries_used.append(new_query)
-                        batch = self._search_query(str(new_query), loc_name, seen_urls)
+                        batch = self._execute_query_batch(str(new_query), loc_name, seen_urls)
                         added = 0
                         for cand in batch:
                             if self.contacted_store.is_contacted(cand):
