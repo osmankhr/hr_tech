@@ -1,5 +1,7 @@
+import { useMemo, useState } from "react";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { Icons } from "../../components/ui/Icon";
+import { getSourcePlatformInfo } from "../../utils/sourceBadge";
 import { CandidateCard } from "./CandidateCard";
 
 export function CandidatePanel({
@@ -15,6 +17,28 @@ export function CandidatePanel({
   headerAction = null,
   headerExtra = null,
 }) {
+  const [sourceFilter, setSourceFilter] = useState("all");
+
+  const sourceSummary = useMemo(() => {
+    const counts = new Map();
+    (candidates || []).forEach((cand) => {
+      const info = getSourcePlatformInfo(cand.source, cand.profileUrl);
+      const existing = counts.get(info.key) || { ...info, count: 0 };
+      existing.count += 1;
+      counts.set(info.key, existing);
+    });
+    return Array.from(counts.values());
+  }, [candidates]);
+
+  const visibleCandidates = useMemo(() => {
+    if (sourceFilter === "all") {
+      return candidates;
+    }
+    return (candidates || []).filter(
+      (cand) => getSourcePlatformInfo(cand.source, cand.profileUrl).key === sourceFilter
+    );
+  }, [candidates, sourceFilter]);
+
   return (
     <div
       className={
@@ -38,8 +62,40 @@ export function CandidatePanel({
         </div>
       )}
 
+      {sourceSummary.length > 0 && (
+        <div className="mb-3 flex flex-wrap items-center gap-1.5">
+          <button
+            type="button"
+            onClick={() => setSourceFilter("all")}
+            className={`rounded-full px-2.5 py-1 text-xs font-medium transition ${
+              sourceFilter === "all"
+                ? "bg-slate-900 text-white"
+                : "bg-slate-100 text-slate-700 hover:bg-slate-200"
+            }`}
+          >
+            All Sources ({candidates.length})
+          </button>
+          {sourceSummary.map((item) => (
+            <button
+              key={item.key}
+              type="button"
+              onClick={() =>
+                setSourceFilter((prev) => (prev === item.key ? "all" : item.key))
+              }
+              className={`rounded-full px-2.5 py-1 text-xs font-semibold transition ${
+                sourceFilter === item.key
+                  ? "ring-2 ring-indigo-600 " + item.pillClass
+                  : item.pillClass + " opacity-85 hover:opacity-100"
+              }`}
+            >
+              {item.display} ({item.count})
+            </button>
+          ))}
+        </div>
+      )}
+
       <div className="grid gap-3">
-        {candidates.map((candidate) => (
+        {visibleCandidates.map((candidate) => (
           <CandidateCard
             key={candidate.id}
             candidate={candidate}
@@ -48,7 +104,7 @@ export function CandidatePanel({
           />
         ))}
 
-        {candidates.length === 0 && (
+        {visibleCandidates.length === 0 && (
           <EmptyState message="No candidates found." />
         )}
       </div>

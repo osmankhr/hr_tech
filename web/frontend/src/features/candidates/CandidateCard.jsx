@@ -1,6 +1,7 @@
 import { Mail, MapPin, Star } from "lucide-react";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
+import { getSourcePlatformInfo } from "../../utils/sourceBadge";
 
 function getCandidateStatusTone(status) {
   if (status === "Shortlisted") return "green";
@@ -11,6 +12,8 @@ function getCandidateStatusTone(status) {
 }
 
 export function CandidateCard({ candidate, onOpen, onEdit }) {
+  const platformInfo = getSourcePlatformInfo(candidate.source, candidate.profileUrl);
+
   return (
     <div className="rounded-lg border border-slate-200 p-4 transition hover:border-indigo-200 hover:bg-indigo-50/30">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
@@ -27,7 +30,12 @@ export function CandidateCard({ candidate, onOpen, onEdit }) {
               {candidate.status}
             </Badge>
 
-            <Badge>{candidate.source}</Badge>
+            <span
+              className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold ${platformInfo.pillClass}`}
+              title={`Source platform: ${platformInfo.label}`}
+            >
+              {platformInfo.display}
+            </span>
           </div>
 
           <p className="mt-1 text-sm font-medium text-slate-700">

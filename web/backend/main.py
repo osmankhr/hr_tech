@@ -1613,6 +1613,62 @@ def run_pipeline(
     }
 
 
+def _load_best_available_pipeline_candidates(pipeline_dir: Path) -> tuple[list[dict], Optional[Path]]:
+    """Load the most advanced candidate artifact available in a pipeline directory.
+
+    Priority order:
+    1. data/ranked_results.json (ranked & AI-reviewed)
+    2. data/filtered_results.json (AI-reviewed)
+    3. data/*/raw_results.json (discovered from Exa + GitHub + Hugging Face + Kaggle)
+    """
+    data_dir = pipeline_dir / "data"
+    ranked_file = data_dir / "ranked_results.json"
+    if ranked_file.exists():
+        try:
+            rows = json.loads(ranked_file.read_text(encoding="utf-8"))
+            if isinstance(rows, list) and rows:
+                return rows, ranked_file
+        except Exception:
+            logger.exception("Failed to read ranked_results.json at %s", ranked_file)
+
+    filtered_file = data_dir / "filtered_results.json"
+    if filtered_file.exists():
+        try:
+            rows = json.loads(filtered_file.read_text(encoding="utf-8"))
+            if isinstance(rows, list) and rows:
+                return rows, filtered_file
+        except Exception:
+            logger.exception("Failed to read filtered_results.json at %s", filtered_file)
+
+    merged_raw: list[dict] = []
+    seen_urls: set[str] = set()
+    first_raw_file: Optional[Path] = None
+    if data_dir.exists():
+        for raw_file in sorted(data_dir.glob("*/raw_results.json")):
+            if first_raw_file is None:
+                first_raw_file = raw_file
+            loc_name = raw_file.parent.name
+            try:
+                rows = json.loads(raw_file.read_text(encoding="utf-8"))
+                if isinstance(rows, list):
+                    for item in rows:
+                        if not isinstance(item, dict):
+                            continue
+                        url = str(item.get("url") or "").strip()
+                        if url and url in seen_urls:
+                            continue
+                        if url:
+                            seen_urls.add(url)
+                        enriched = dict(item)
+                        if not enriched.get("location"):
+                            enriched["location"] = loc_name
+                        merged_raw.append(enriched)
+            except Exception:
+                logger.exception("Failed to read raw_results.json at %s", raw_file)
+
+    return merged_raw, first_raw_file
+
+
 @app.post("/api/campaigns/{campaign_id}/pipeline/import-ranked")
 def import_ranked_results(
     campaign_id: int,
@@ -1633,6 +1689,7 @@ def import_ranked_results(
 
     pipeline_dir = config_row["pipeline_dir"] if config_row else ""
     artifact_path = ranked_results_path.strip()
+    preloaded_candidates: Optional[list[dict]] = None
     if not artifact_path:
         if not pipeline_dir:
             conn.close()
@@ -1640,12 +1697,20 @@ def import_ranked_results(
                 status_code=400,
                 detail="No pipeline config found. Provide ranked_results_path or setup pipeline first.",
             )
-        artifact_path = str(Path(pipeline_dir) / "data" / "ranked_results.json")
-
-    artifact_file = Path(artifact_path)
-    if not artifact_file.exists():
-        conn.close()
-        raise HTTPException(status_code=404, detail="ranked_results.json not found")
+        ranked_candidate_file = Path(pipeline_dir) / "data" / "ranked_results.json"
+        if ranked_candidate_file.exists():
+            artifact_file = ranked_candidate_file
+        else:
+            preloaded_candidates, fallback_file = _load_best_available_pipeline_candidates(Path(pipeline_dir))
+            if not fallback_file or not preloaded_candidates:
+                conn.close()
+                raise HTTPException(status_code=404, detail="No pipeline results found yet")
+            artifact_file = fallback_file
+    else:
+        artifact_file = Path(artifact_path)
+        if not artifact_file.exists():
+            conn.close()
+            raise HTTPException(status_code=404, detail="ranked_results.json not found")
 
     now = utc_now()
     run_cur = conn.execute("""
@@ -1671,9 +1736,12 @@ def import_ranked_results(
     run_id = run_cur.lastrowid
 
     try:
-        ranked_candidates = json.loads(artifact_file.read_text(encoding="utf-8"))
+        if preloaded_candidates is not None:
+            ranked_candidates = preloaded_candidates
+        else:
+            ranked_candidates = json.loads(artifact_file.read_text(encoding="utf-8"))
         if not isinstance(ranked_candidates, list):
-            raise ValueError("ranked_results.json must contain a list")
+            raise ValueError("Candidate results file must contain a list")
 
         created_count = 0
         updated_count = 0
@@ -1817,6 +1885,24 @@ def import_ranked_results(
                 now,
             ))
             linked_count += 1
+
+            # Attach skills from item.skills or platform_metadata (GitHub top_languages, HF pipeline_tags)
+            pmeta = item.get("platform_metadata") or {}
+            raw_skills = list(item.get("skills") or [])
+            for extra_list in (pmeta.get("top_languages"), pmeta.get("pipeline_tags")):
+                if isinstance(extra_list, list):
+                    raw_skills.extend(extra_list)
+            for skill_name in raw_skills:
+                cleaned_skill = str(skill_name or "").strip()
+                if not cleaned_skill:
+                    continue
+                conn.execute("INSERT OR IGNORE INTO skills (name) VALUES (?)", (cleaned_skill,))
+                skill_row = conn.execute("SELECT id FROM skills WHERE name = ?", (cleaned_skill,)).fetchone()
+                if skill_row:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO candidate_skills (candidate_id, skill_id) VALUES (?, ?)",
+                        (candidate_id, skill_row["id"]),
+                    )
 
             conn.execute("""
                 INSERT INTO candidate_rankings (
@@ -2335,16 +2421,7 @@ def list_campaign_candidates(
             raise HTTPException(status_code=404, detail="Config version not found")
 
         pipeline_dir = Path(version_row["pipeline_dir"])
-        ranked_file = pipeline_dir / "data" / "ranked_results.json"
-
-        candidates_raw = []
-        if ranked_file.exists():
-            try:
-                data = json.loads(ranked_file.read_text(encoding="utf-8"))
-                if isinstance(data, list):
-                    candidates_raw = data
-            except Exception:
-                logger.exception("Failed to read ranked_results.json for version %d", version_number)
+        candidates_raw, _ = _load_best_available_pipeline_candidates(pipeline_dir)
 
         total_count = len(candidates_raw)
         paged_raw = candidates_raw[offset : offset + page_size]

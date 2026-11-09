@@ -532,7 +532,7 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
 
       if (
         run.status === "Completed" &&
-        (run.run_type === "full" || run.run_type === "rank") &&
+        (run.run_type === "full" || run.run_type === "rank" || run.run_type === "search") &&
         !autoImportedRunIdsRef.current.has(run.id)
       ) {
         autoImportedRunIdsRef.current.add(run.id);
@@ -1281,6 +1281,15 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
                     }`}
                   >
                     {pipelineBusy ? "Working..." : "Run Campaign"}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => runPipeline("search")}
+                    disabled={pipelineBusy || !pipelineCampaignId || pipelineRunning}
+                    className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 disabled:opacity-60"
+                  >
+                    Run Search Only
                   </button>
 
                   <button

@@ -5,6 +5,7 @@ import { Modal } from "../../components/ui/Modal";
 import { CandidateProgressBar } from "./CandidateProgressBar";
 import { CandidateComments } from "./CandidateComments";
 import { CandidateActivityLog } from "./CandidateActivityLog";
+import { getSourcePlatformInfo } from "../../utils/sourceBadge";
 
 export function CandidateDetailModal({ candidate, scoringExplainer, onClose, onEdit }) {
   const [activeTab, setActiveTab] = useState("details");
@@ -41,6 +42,11 @@ export function CandidateDetailModal({ candidate, scoringExplainer, onClose, onE
 
   if (!candidate) return null;
 
+  const platformInfo = getSourcePlatformInfo(
+    candidate.source,
+    candidate.profileUrl || candidate.profile_url
+  );
+
   return (
     <>
       <Modal title="Candidate Details" onClose={onClose}>
@@ -49,14 +55,18 @@ export function CandidateDetailModal({ candidate, scoringExplainer, onClose, onE
         <div className="shrink-0 border-b border-slate-100 pb-4 mb-4">
           <div className="flex justify-between items-start mb-4">
             <div>
-              <h4 className="text-xl font-semibold text-slate-900">{candidate.name || candidate.full_name}</h4>
+              <div className="flex flex-wrap items-center gap-2">
+                <h4 className="text-xl font-semibold text-slate-900">{candidate.name || candidate.full_name}</h4>
+                <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-semibold ${platformInfo.pillClass}`}>
+                  {platformInfo.display}
+                </span>
+              </div>
               <p className="text-slate-500 font-medium">{candidate.role || candidate.current_title || "Unknown Role"}</p>
             </div>
             {candidate.profileUrl && (
               <a href={candidate.profileUrl} target="_blank" rel="noopener noreferrer">
                 <Button variant="outline" size="sm" className="text-indigo-700 border-indigo-200 hover:bg-indigo-50">
-                  <svg className="w-4 h-4 mr-1 inline" fill="currentColor" viewBox="0 0 24 24"><path d="M19 0h-14c-2.761 0-5 2.239-5 5v14c0 2.761 2.239 5 5 5h14c2.762 0 5-2.239 5-5v-14c0-2.761-2.238-5-5-5zm-11 19h-3v-11h3v11zm-1.5-12.268c-.966 0-1.75-.79-1.75-1.764s.784-1.764 1.75-1.764 1.75.79 1.75 1.764-.783 1.764-1.75 1.764zm13.5 12.268h-3v-5.604c0-3.368-4-3.113-4 0v5.604h-3v-11h3v1.765c1.396-2.586 7-2.777 7 2.476v6.759z"/></svg>
-                  LinkedIn
+                  {platformInfo.profileButtonLabel}
                 </Button>
               </a>
             )}
@@ -79,7 +89,7 @@ export function CandidateDetailModal({ candidate, scoringExplainer, onClose, onE
                 <Info label="Candidate Code" value={candidate.candidateCode || candidate.candidate_code} />
                 <Info label="Email" value={candidate.email} />
                 <Info label="Location" value={candidate.location} />
-                <Info label="Source" value={candidate.source} />
+                <Info label="Source" value={platformInfo.display} />
                 <Info label="Status" value={candidate.status} />
                 <Info label="Score" value={candidate.score} />
                 <Info label="Experience" value={candidate.yearsExperience || candidate.years_experience} />
