@@ -289,6 +289,7 @@ class TestKaggleCandidateSearcher:
 
     def test_kaggle_api_channel_filters_by_recent_kernel_execution(self):
         searcher = KaggleCandidateSearcher(
+            kaggle_api_token="",
             kaggle_username="test_user",
             kaggle_key="test_secret_key",
             activity_days=180,
@@ -332,6 +333,19 @@ class TestKaggleCandidateSearcher:
         assert cand["source"] == "kaggle"
         assert cand["info"]["votes"] == 48
 
+    def test_kaggle_api_token_bearer_auth_without_username(self):
+        searcher = KaggleCandidateSearcher(
+            kaggle_api_token="KGAT_test_bearer_token_1234",
+            kaggle_username="",
+            kaggle_key="",
+            activity_days=180,
+            num_results=10,
+            require_recent_activity=True,
+        )
+        assert searcher._has_kaggle_api_credentials() is True
+        headers = searcher._kaggle_auth_headers()
+        assert headers["Authorization"] == "Bearer KGAT_test_bearer_token_1234"
+
     def test_kaggle_exa_domain_channel(self):
         mock_exa = MagicMock()
         mock_hit = MagicMock()
@@ -346,6 +360,7 @@ class TestKaggleCandidateSearcher:
 
         searcher = KaggleCandidateSearcher(
             exa_client=mock_exa,
+            kaggle_api_token="",
             kaggle_username="",
             kaggle_key="",
             activity_days=180,

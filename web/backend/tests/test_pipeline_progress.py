@@ -264,15 +264,16 @@ class PipelineProgressTests(unittest.TestCase):
             )
         )
 
-        self.status_path.unlink()
-        os.mkfifo(self.status_path)
-        self.assertIsNone(
-            read_pipeline_progress(
-                self.campaign_dir,
-                campaigns_root=self.root,
-                now=datetime(2026, 9, 24, 12, 1, 0, tzinfo=timezone.utc),
+        if hasattr(os, 'mkfifo'):
+            self.status_path.unlink()
+            os.mkfifo(self.status_path)
+            self.assertIsNone(
+                read_pipeline_progress(
+                    self.campaign_dir,
+                    campaigns_root=self.root,
+                    now=datetime(2026, 9, 24, 12, 1, 0, tzinfo=timezone.utc),
+                )
             )
-        )
 
 
 if __name__ == "__main__":

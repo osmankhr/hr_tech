@@ -41,6 +41,7 @@ DEFAULT_ACTIVITY_DAYS = 180
 
 # Explicit allowlist of environment variable keys manageable via /api/settings/integrations.
 ALLOWED_INTEGRATION_ENV_KEYS = (
+    "KAGGLE_API_TOKEN",
     "KAGGLE_USERNAME",
     "KAGGLE_KEY",
     "GITHUB_TOKEN",
@@ -365,6 +366,67 @@ def _build_location_filter_clause(locations):
     return "\n".join(lines)
 
 
+_ING_EMPLOYER_RE = re.compile(
+    r"\b(ing\s+bank|ing\s+hubs|ing\s+t[uü]rkiye|ing\s+turkey|ing\s+groep|ing\s+direct)\b"
+    r"|(?<![a-z0-9])@ing(?![a-z0-9])",
+    re.IGNORECASE,
+)
+
+
+def is_ing_affiliated(text: Optional[str]) -> bool:
+    """Return True if candidate bio/company indicates current ING employment."""
+    if not text or not isinstance(text, str):
+        return False
+    return bool(_ING_EMPLOYER_RE.search(text))
+
+
+_MANDATORY_CRITERIA_END_MARKER = "<!-- END MANDATORY CRITERIA -->"
+
+
+def _build_mandatory_criteria_clause(
+    locations,
+    pipeline_name: str = "",
+    job_description: str = "",
+) -> str:
+    lines = []
+
+    # 1. Location clause if locations exist
+    loc_clause = _build_location_filter_clause(locations)
+    if loc_clause:
+        lines.append(loc_clause)
+
+    # 2. Standing Company Exclusion (ING)
+    lines.extend([
+        "## Company Exclusion Rules (hard filter)",
+        "",
+        "Standing hard rule: This recruitment search is strictly for candidates outside ING. Candidates currently employed at ING, ING Bank, ING Hubs, ING Hubs Türkiye/Turkey, ING Groep, or ING Direct MUST be REJECTED.",
+        "",
+    ])
+
+    # 3. Seniority & Experience hard filter (detect if role is Senior / 5+ years)
+    combined_text = f"{pipeline_name} {job_description}".lower()
+    is_senior = any(term in combined_text for term in ("senior", "lead", "principal", "staff", "5+"))
+    if is_senior:
+        lines.extend([
+            "## Seniority & Experience Requirement (hard filter)",
+            "",
+            "For this senior role, the candidate must have substantial professional industry experience (at least 3+ years hands-on, targeting 5+ years). Candidates who are currently students, interns, trainees, or in entry-level bootcamps, or who have under 3 years of total experience, MUST be REJECTED. Do not credit trainee/intern tenures as senior engineering experience.",
+            "",
+        ])
+
+    # 4. Evidence Verification & Social Feed Stripping
+    lines.extend([
+        "## Evidence Verification Rule",
+        "",
+        "Evaluate the candidate strictly on their own verified accomplishments, repositories, and direct employment history. Disregard social feed activity such as posts, awards, or articles that the candidate merely liked, commented on, or reposted (e.g. '[... liked this]').",
+        "",
+        _MANDATORY_CRITERIA_END_MARKER,
+        "",
+    ])
+
+    return "\n".join(lines)
+
+
 def _parse_platforms_json(platforms_json: Optional[str]) -> list[str]:
     """Validate and normalize a JSON-encoded list of community platform identifiers.
 
@@ -505,13 +567,16 @@ _LOCATION_CLAUSE_END_MARKER = "pending for manual review rather than accepting."
 
 
 def _strip_location_clause(text: str) -> str:
-    """Undo _build_location_filter_clause() so the edit-config UI shows only what the user typed.
+    """Undo _build_mandatory_criteria_clause() / _build_location_filter_clause() so the edit-config UI shows only what the user typed.
 
     Configs created before filter_criteria_raw.md existed (see setup_pipeline_campaign) only have
     the combined file on disk, with the auto-generated location clause glued onto the front.
     Stripping it here (rather than backfilling raw files for old campaigns) means an old config's
     first re-save re-derives the clause itself instead of keeping two stale copies in sync.
     """
+    if _MANDATORY_CRITERIA_END_MARKER in text:
+        end_idx = text.find(_MANDATORY_CRITERIA_END_MARKER)
+        return text[end_idx + len(_MANDATORY_CRITERIA_END_MARKER):].lstrip("\n")
     if not text.startswith(_LOCATION_CLAUSE_MARKER):
         return text
     end_idx = text.find(_LOCATION_CLAUSE_END_MARKER)
@@ -640,9 +705,10 @@ def _next_candidate_code(conn):
 
 
 def _candidate_status_from_review(recommendation: str):
-    if recommendation == "ACCEPT":
+    rec = str(recommendation or "").upper()
+    if rec in ("ACCEPT", "SHORTLIST", "APPROVE"):
         return "Shortlisted"
-    if recommendation == "REJECT":
+    if rec in ("REJECT", "DISQUALIFY"):
         return "Rejected"
     return "Reviewed"
 
@@ -756,6 +822,7 @@ def _run_pipeline_in_background(run_id: int, command, cwd: Path):
         ).fetchone()
 
         child_env = os.environ.copy()
+        child_env.update(_read_dotenv_dict(CANDIDATE_POOL_ENV_PATH))
         child_env["PYTHONUTF8"] = "1"
         child_env["PYTHONIOENCODING"] = "utf-8"
 
@@ -955,9 +1022,13 @@ def setup_pipeline_campaign(
     )
     job_description_path.write_text(job_description, encoding="utf-8")
 
-    location_clause = _build_location_filter_clause(cleaned_locations)
+    mandatory_clause = _build_mandatory_criteria_clause(
+        cleaned_locations,
+        pipeline_name=pipeline_name,
+        job_description=job_description,
+    )
     full_filter_criteria = (
-        f"{location_clause}\n{filter_criteria}" if location_clause else filter_criteria
+        f"{mandatory_clause}\n{filter_criteria}" if mandatory_clause else filter_criteria
     )
     filter_criteria_path.write_text(full_filter_criteria, encoding="utf-8")
     # Kept alongside the combined file (which is what the pipeline actually reads) so the
@@ -1187,9 +1258,13 @@ def update_pipeline_config(
     )
     job_description_path.write_text(job_description, encoding="utf-8")
 
-    location_clause = _build_location_filter_clause(cleaned_locations)
+    mandatory_clause = _build_mandatory_criteria_clause(
+        cleaned_locations,
+        pipeline_name=pipeline_name,
+        job_description=job_description,
+    )
     full_filter_criteria = (
-        f"{location_clause}\n{filter_criteria}" if location_clause else filter_criteria
+        f"{mandatory_clause}\n{filter_criteria}" if mandatory_clause else filter_criteria
     )
     filter_criteria_path.write_text(full_filter_criteria, encoding="utf-8")
     (input_dir / "filter_criteria_raw.md").write_text(filter_criteria, encoding="utf-8")
@@ -1202,6 +1277,15 @@ def update_pipeline_config(
             shutil.copyfile(source_cv_path, seed_cv_dir / source_cv_path.name)
 
     now = utc_now()
+    location_label = ", ".join(loc["name"] for loc in cleaned_locations if loc.get("name"))
+    conn.execute(
+        """
+        UPDATE campaigns
+        SET campaign_name = ?, location = CASE WHEN ? != '' THEN ? ELSE location END
+        WHERE id = ?
+        """,
+        (pipeline_name, location_label, location_label, campaign_id),
+    )
     conn.execute("""
         UPDATE pipeline_campaign_configs
         SET pipeline_dir = ?, campaign_yaml_path = ?, job_description_path = ?,
@@ -1707,7 +1791,14 @@ def import_ranked_results(
                 raise HTTPException(status_code=404, detail="No pipeline results found yet")
             artifact_file = fallback_file
     else:
-        artifact_file = Path(artifact_path)
+        artifact_file = Path(artifact_path).resolve()
+        # Security: Prevent arbitrary filesystem read/traversal
+        if not (
+            artifact_file.is_relative_to(CANDIDATE_POOL_ROOT.resolve())
+            or artifact_file.is_relative_to(UPLOAD_DIR.resolve())
+        ):
+            conn.close()
+            raise HTTPException(status_code=403, detail="artifact_path must be within candidate_pool directory")
         if not artifact_file.exists():
             conn.close()
             raise HTTPException(status_code=404, detail="ranked_results.json not found")
@@ -1747,33 +1838,141 @@ def import_ranked_results(
         updated_count = 0
         linked_count = 0
 
+        # Check if the campaign requires Senior level experience
+        camp_meta = conn.execute(
+            "SELECT campaign_name, position_name, experience FROM campaigns WHERE id = ?",
+            (campaign_id,),
+        ).fetchone()
+        is_senior_role = False
+        if camp_meta:
+            pos_combined = f"{camp_meta['campaign_name'] or ''} {camp_meta['position_name'] or ''}".lower()
+            exp_combined = str(camp_meta["experience"] or "").lower()
+            if any(k in pos_combined for k in ("senior", "lead", "principal", "staff")) or "5+" in exp_combined:
+                is_senior_role = True
+
         for item in ranked_candidates:
             if not isinstance(item, dict):
                 continue
 
             profile_url = str(item.get("url") or "").strip()
             email = str(item.get("email") or "").strip().lower()
-            full_name = str(item.get("title") or "").strip()
-            job_title = str(item.get("extracted_title") or "").strip() or full_name
+
+            raw_text = str(item.get("text") or "")
+            full_name = str(item.get("name") or item.get("title") or "").strip()
+            # 1. Strip trailing platform indicators (e.g. " | LinkedIn", " - Kaggle")
+            full_name = re.sub(r"\s*[\|\-–—]\s*(LinkedIn|Kaggle|GitHub|Hugging Face).*$", "", full_name, flags=re.IGNORECASE).strip()
+            # 2. If full_name contains " - Subtitle", extract the candidate's name portion
+            if " - " in full_name:
+                cand_name_prefix, _ = full_name.split(" - ", 1)
+                if len(cand_name_prefix) < 40 and not ("/" in cand_name_prefix or "http" in cand_name_prefix.lower()):
+                    full_name = cand_name_prefix.strip()
+
+            # 3. If full_name is a URL or repo slug (e.g. github.com/apress/synthetic-data-deep-learning.), extract clean name
+            if "/" in full_name or full_name.lower().startswith("http") or "github.com" in full_name.lower():
+                m_name = re.search(r"Candidate Name:\s*([^\n\r(@]+)", raw_text)
+                if m_name and "/" not in m_name.group(1):
+                    full_name = m_name.group(1).strip()
+                else:
+                    full_name = str(item.get("info", {}).get("username") or item.get("username") or "Developer").strip()
+
+            # 4. Restore truncated last names (e.g. "Gülsüm B." -> "Gülsüm Budakoğlu")
+            trunc_m = re.match(r"^([A-ZÇĞİÖŞÜa-zçğıöşü]+)\s+([A-ZÇĞİÖŞÜ])\.?$", full_name)
+            if trunc_m:
+                first_name = trunc_m.group(1)
+                last_initial = trunc_m.group(2).lower()
+                slug_m = re.search(r"/in/([a-z0-9\-]+)", profile_url.lower())
+                if slug_m:
+                    slug_parts = slug_m.group(1).split("-")
+                    if len(slug_parts) >= 2:
+                        cand_last = slug_parts[-1]
+                        if cand_last.lower().startswith(last_initial) and len(cand_last) > 2:
+                            text_surname_m = re.search(rf"\b{first_name}\s+([A-ZÇĞİÖŞÜa-zçğıöşü]+)\b", raw_text, re.IGNORECASE)
+                            if text_surname_m and text_surname_m.group(1).lower().startswith(last_initial):
+                                full_name = f"{first_name} {text_surname_m.group(1)}"
+                            else:
+                                full_name = f"{first_name} {cand_last.capitalize()}"
+
+            job_title = str(item.get("extracted_title") or item.get("title") or "").strip() or full_name
             source = str(item.get("source") or "candidate_pool")
             location = str(item.get("location") or "").strip()
-            recommendation = str((item.get("ai_review") or {}).get("recommendation") or "PENDING").upper()
-            candidate_status = _candidate_status_from_review(recommendation)
+            ai_rev = item.get("ai_review") or {}
+            recommendation = str(ai_rev.get("recommendation") or ai_rev.get("decision") or "PENDING").upper()
+            if recommendation == "APPROVE":
+                recommendation = "SHORTLIST"
+            ranking_obj = item.get("ranking") or {}
+            manual = ranking_obj.get("manual") or {}
+            agent = ranking_obj.get("agent") or {}
+            category_val = str(manual.get("category") or ranking_obj.get("category") or "").upper()
+            manual_score = (
+                manual.get("manual_score")
+                if manual.get("manual_score") is not None
+                else (
+                    manual.get("total_score")
+                    if manual.get("total_score") is not None
+                    else ranking_obj.get("manual_score")
+                )
+            )
+            score_value = manual_score if manual_score is not None else (item.get("score") or 0)
+
+            years_experience = _extract_years_experience(raw_text)
+
+            # Hard Gate 1: Strict ING Affiliation Exclusion
+            if is_ing_affiliated(full_name) or is_ing_affiliated(job_title) or is_ing_affiliated(raw_text):
+                category_val = "REJECT"
+                score_value = 0
+                manual_score = 0.0
+
+            # Hard Gate 2: Seniority & Trainee / Low Experience Exclusion
+            is_trainee_or_intern = bool(
+                re.search(r"\b(trainee|intern|internship|stajyer|staj)\b", f"{job_title} {raw_text[:600]}", re.IGNORECASE)
+            )
+            if is_senior_role:
+                if (years_experience is not None and years_experience < 3.0) or (is_trainee_or_intern and (years_experience is None or years_experience < 4.0)):
+                    category_val = "REJECT"
+                    if score_value is not None:
+                        try:
+                            score_value = min(float(score_value), 35.0)
+                        except (TypeError, ValueError):
+                            score_value = 0.0
+                    if manual_score is not None:
+                        try:
+                            manual_score = min(float(manual_score), 35.0)
+                        except (TypeError, ValueError):
+                            manual_score = 0.0
+
+            if category_val == "SHORTLIST":
+                candidate_status = "Shortlisted"
+            elif category_val == "REJECT":
+                candidate_status = "Rejected"
+            elif category_val in ("BACKUP", "REVIEW"):
+                candidate_status = "Reviewed"
+            else:
+                candidate_status = _candidate_status_from_review(recommendation)
+
             english_confidence = str(item.get("english_confidence") or "").strip().upper() or None
             english_confidence_reason = str(item.get("english_confidence_reason") or "").strip() or None
 
-            manual = (item.get("ranking") or {}).get("manual") or {}
-            agent = (item.get("ranking") or {}).get("agent") or {}
-            manual_score = manual.get("manual_score")
-            score_value = manual_score if manual_score is not None else (item.get("score") or 0)
-
             try:
-                score_int = int(round(float(score_value)))
+                raw_float = float(score_value)
+                # Raw search scores from Exa/GitHub/HF/Kaggle are 0.0-1.0 floats; scale to 0-100
+                # when manual_score is not yet computed so candidates have differentiated scores.
+                if manual_score is None and 0.0 < raw_float <= 1.0:
+                    raw_float = raw_float * 100.0
+                score_int = int(round(raw_float))
             except (TypeError, ValueError):
                 score_int = 0
 
             score_int = max(0, min(100, score_int))
             years_experience = _extract_years_experience(str(item.get("text") or ""))
+
+            ai_reasoning = str((item.get("ai_review") or {}).get("reasoning") or "").strip()
+            raw_highlights = item.get("highlights")
+            highlights_summary = (
+                "\n".join(str(h).strip() for h in raw_highlights if str(h).strip())
+                if isinstance(raw_highlights, list)
+                else ""
+            )
+            candidate_notes = ai_reasoning or highlights_summary or None
 
             existing = None
             if profile_url:
@@ -1804,6 +2003,7 @@ def import_ranked_results(
                         years_experience = COALESCE(?, years_experience),
                         english_confidence = COALESCE(?, english_confidence),
                         english_confidence_reason = COALESCE(?, english_confidence_reason),
+                        notes = COALESCE(?, notes),
                         last_updated = ?
                     WHERE id = ?
                 """, (
@@ -1819,6 +2019,7 @@ def import_ranked_results(
                     years_experience,
                     english_confidence,
                     english_confidence_reason,
+                    candidate_notes,
                     now,
                     candidate_id,
                 ))
@@ -1857,7 +2058,7 @@ def import_ranked_results(
                     english_confidence,
                     english_confidence_reason,
                     now,
-                    str((item.get("ai_review") or {}).get("reasoning") or "").strip() or None,
+                    candidate_notes,
                 ))
                 candidate_id = cur.lastrowid
                 created_count += 1
@@ -1934,11 +2135,16 @@ def import_ranked_results(
             """, (
                 campaign_id,
                 candidate_id,
-                manual.get("manual_score"),
-                manual.get("category"),
-                manual.get("rank"),
-                json.dumps(manual.get("feature_contributions") or {}, ensure_ascii=False),
-                manual.get("gate_penalty"),
+                manual_score,
+                category_val or manual.get("category") or ranking_obj.get("category"),
+                manual.get("rank") or ranking_obj.get("rank"),
+                json.dumps(
+                    manual.get("feature_contributions")
+                    or ranking_obj.get("feature_contributions")
+                    or {},
+                    ensure_ascii=False,
+                ),
+                manual.get("gate_penalty") if category_val != "REJECT" else (manual.get("gate_penalty") or -30.0),
                 manual.get("ai_adjustment"),
                 json.dumps(agent, ensure_ascii=False),
                 json.dumps(manual, ensure_ascii=False),
@@ -2060,6 +2266,8 @@ def export_campaign_excel(
         raise HTTPException(status_code=404, detail="No Excel export found. Run the pipeline first.")
 
     latest = xlsx_files[0]
+    if not latest.resolve().is_relative_to(output_dir.resolve()):
+        raise HTTPException(status_code=403, detail="Access denied")
     suffix = f"_v{version_number}" if version_number is not None else ""
     download_name = f"{campaign['campaign_code']}{suffix}_candidates.xlsx"
 
@@ -2389,14 +2597,26 @@ def list_campaign_candidates(
     page: int = 1,
     page_size: int = 10,
     version_number: Optional[int] = Query(default=None),
+    sort_by: str = Query(default="score_desc"),
     current_user=Depends(get_current_user),
 ):
     if page < 1:
         page = 1
     if page_size < 1:
         page_size = 10
-    if page_size > 50:
-        page_size = 50
+    if page_size > 500:
+        page_size = 500
+
+    allowed_sort_clauses = {
+        "score_desc": "COALESCE(cr.manual_score, cand.score, 0) DESC, COALESCE(cr.rank, 999999) ASC, cand.full_name COLLATE NOCASE ASC",
+        "score_asc": "COALESCE(cr.manual_score, cand.score, 0) ASC, cand.full_name COLLATE NOCASE ASC",
+        "name_asc": "cand.full_name COLLATE NOCASE ASC, COALESCE(cr.manual_score, cand.score, 0) DESC",
+        "name_desc": "cand.full_name COLLATE NOCASE DESC, COALESCE(cr.manual_score, cand.score, 0) DESC",
+        "exp_desc": "COALESCE(cand.years_experience, -1) DESC, COALESCE(cr.manual_score, cand.score, 0) DESC",
+        "source_asc": "cand.source COLLATE NOCASE ASC, COALESCE(cr.manual_score, cand.score, 0) DESC",
+        "recent": "cand.last_updated DESC, cand.id DESC",
+    }
+    order_by_sql = allowed_sort_clauses.get(sort_by, allowed_sort_clauses["score_desc"])
 
     offset = (page - 1) * page_size
 
@@ -2432,21 +2652,43 @@ def list_campaign_candidates(
                 continue
             profile_url = str(item.get("url") or "").strip()
             email = str(item.get("email") or "").strip().lower()
-            full_name = str(item.get("title") or "").strip()
-            job_title = str(item.get("extracted_title") or "").strip() or full_name
+            full_name = str(item.get("name") or item.get("title") or "").strip()
+            job_title = str(item.get("extracted_title") or item.get("title") or "").strip() or full_name
             source = str(item.get("source") or "candidate_pool")
             location = str(item.get("location") or "").strip()
-            recommendation = str((item.get("ai_review") or {}).get("recommendation") or "PENDING").upper()
-            candidate_status = _candidate_status_from_review(recommendation)
+            ai_rev = item.get("ai_review") or {}
+            recommendation = str(ai_rev.get("recommendation") or ai_rev.get("decision") or "PENDING").upper()
+            if recommendation == "APPROVE":
+                recommendation = "SHORTLIST"
+            ranking_obj = item.get("ranking") or {}
+            manual = ranking_obj.get("manual") or {}
+            agent = ranking_obj.get("agent") or {}
+            category_val = str(manual.get("category") or ranking_obj.get("category") or "").upper()
+            if category_val == "SHORTLIST":
+                candidate_status = "Shortlisted"
+            elif category_val == "REJECT":
+                candidate_status = "Rejected"
+            elif category_val in ("BACKUP", "REVIEW"):
+                candidate_status = "Reviewed"
+            else:
+                candidate_status = _candidate_status_from_review(recommendation)
             english_confidence = str(item.get("english_confidence") or "").strip().upper() or None
             english_confidence_reason = str(item.get("english_confidence_reason") or "").strip() or None
-
-            manual = (item.get("ranking") or {}).get("manual") or {}
-            agent = (item.get("ranking") or {}).get("agent") or {}
-            manual_score = manual.get("manual_score")
+            manual_score = (
+                manual.get("manual_score")
+                if manual.get("manual_score") is not None
+                else (
+                    manual.get("total_score")
+                    if manual.get("total_score") is not None
+                    else ranking_obj.get("manual_score")
+                )
+            )
             score_value = manual_score if manual_score is not None else (item.get("score") or 0)
             try:
-                score_int = int(round(float(score_value)))
+                raw_float = float(score_value)
+                if manual_score is None and 0.0 < raw_float <= 1.0:
+                    raw_float = raw_float * 100.0
+                score_int = int(round(raw_float))
             except (TypeError, ValueError):
                 score_int = 0
             score_int = max(0, min(100, score_int))
@@ -2531,7 +2773,7 @@ def list_campaign_candidates(
     ).fetchone()["count"]
 
     rows = conn.execute(
-        """
+        f"""
         SELECT
             cand.id,
             cand.candidate_code,
@@ -2564,7 +2806,7 @@ def list_campaign_candidates(
             AND cr.candidate_id = cc.candidate_id
         WHERE cc.campaign_id = ?
         GROUP BY cand.id
-        ORDER BY COALESCE(cr.rank, 999999) ASC, cand.score DESC
+        ORDER BY {order_by_sql}
         LIMIT ? OFFSET ?
         """,
         (campaign_id, page_size, offset),
@@ -2726,16 +2968,32 @@ def _save_uploaded_sample_cv(sample_cv: Optional[UploadFile]) -> Optional[str]:
     if sample_cv is None or not sample_cv.filename:
         return None
 
-    if not sample_cv.filename.lower().endswith(".pdf"):
+    raw_name = Path(sample_cv.filename).name
+    # Strip any directory traversal or path characters
+    safe_name = re.sub(r"[^a-zA-Z0-9._-]", "_", raw_name)
+    if not safe_name.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files are allowed")
 
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
-    safe_filename = sample_cv.filename.replace(" ", "_")
-    saved_filename = f"{timestamp}_{safe_filename}"
-    saved_path = UPLOAD_DIR / saved_filename
+    saved_filename = f"{timestamp}_{safe_name}"
+    saved_path = (UPLOAD_DIR / saved_filename).resolve()
+    # Security: Ensure saved_path stays strictly inside UPLOAD_DIR
+    if not saved_path.is_relative_to(UPLOAD_DIR.resolve()):
+        raise HTTPException(status_code=400, detail="Invalid filename")
 
+    MAX_CV_BYTES = 10 * 1024 * 1024  # 10 MB upload cap to prevent DoS
+    size = 0
     with open(saved_path, "wb") as buffer:
-        shutil.copyfileobj(sample_cv.file, buffer)
+        while True:
+            chunk = sample_cv.file.read(8192)
+            if not chunk:
+                break
+            size += len(chunk)
+            if size > MAX_CV_BYTES:
+                buffer.close()
+                saved_path.unlink(missing_ok=True)
+                raise HTTPException(status_code=400, detail="Uploaded file exceeds 10 MB limit")
+            buffer.write(chunk)
 
     return saved_filename
 
@@ -3575,6 +3833,13 @@ def _build_integrations_status_response() -> dict:
             "masked": _mask_secret_value(key, raw_val),
         }
 
+    kaggle_official_ready = (
+        keys_status["KAGGLE_API_TOKEN"]["configured"]
+        or (
+            keys_status["KAGGLE_USERNAME"]["configured"]
+            and keys_status["KAGGLE_KEY"]["configured"]
+        )
+    )
     return {
         "keys": keys_status,
         "platforms": {
@@ -3583,14 +3848,8 @@ def _build_integrations_status_response() -> dict:
                 "mode": "primary_search",
             },
             "kaggle": {
-                "ready": (
-                    (keys_status["KAGGLE_USERNAME"]["configured"] and keys_status["KAGGLE_KEY"]["configured"])
-                    or keys_status["EXA_API_KEY"]["configured"]
-                ),
-                "official_api_configured": (
-                    keys_status["KAGGLE_USERNAME"]["configured"]
-                    and keys_status["KAGGLE_KEY"]["configured"]
-                ),
+                "ready": kaggle_official_ready or keys_status["EXA_API_KEY"]["configured"],
+                "official_api_configured": kaggle_official_ready,
                 "exa_fallback_configured": keys_status["EXA_API_KEY"]["configured"],
             },
             "github": {

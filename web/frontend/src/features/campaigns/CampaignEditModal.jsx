@@ -5,6 +5,13 @@ import { CampaignForm } from "./CampaignForm";
 export function CampaignEditModal({
   campaign,
   formHook,
+  pipelineConfig,
+  onPipelineConfigChange,
+  onLocationChange,
+  onAddLocation,
+  onRemoveLocation,
+  pipelineConfigLoading = false,
+  saving = false,
   skillSuggestions,
   onClose,
   onSave,
@@ -38,10 +45,17 @@ export function CampaignEditModal({
   if (!campaign) return null;
 
   return (
-    <Modal title="Edit Campaign Manually" onClose={onClose} size="max-w-4xl">
+    <Modal title="Edit Campaign" onClose={onClose} size="max-w-5xl">
       <CampaignForm
         form={campaignForm}
         updateForm={updateForm}
+        pipelineConfig={pipelineConfig}
+        onPipelineConfigChange={onPipelineConfigChange}
+        onLocationChange={onLocationChange}
+        onAddLocation={onAddLocation}
+        onRemoveLocation={onRemoveLocation}
+        pipelineConfigLoading={pipelineConfigLoading}
+        saving={saving}
         skillInput={skillInput}
         setSkillInput={setSkillInput}
         selectedSkills={selectedSkills}
@@ -55,6 +69,7 @@ export function CampaignEditModal({
         onClose={onClose}
         onSave={onSave}
         submitLabel="Update Campaign"
+        isModal={true}
       />
     </Modal>
   );

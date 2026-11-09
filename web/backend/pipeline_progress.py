@@ -51,6 +51,14 @@ def _non_negative_int(value: Any) -> int | None:
     return parsed if 0 <= parsed <= 1_000_000_000 else None
 
 
+_HAS_DIR_FD = (
+    hasattr(os, "O_DIRECTORY")
+    and hasattr(os, "O_NOFOLLOW")
+    and hasattr(os, "O_NONBLOCK")
+    and os.open in getattr(os, "supports_dir_fd", set())
+)
+
+
 @contextmanager
 def _open_campaign_data_dir(
     campaign_dir: str | Path,
@@ -58,48 +66,68 @@ def _open_campaign_data_dir(
     campaigns_root: str | Path,
 ):
     """Open the campaign's real data directory without following nested symlinks."""
-    campaign_fd = None
-    data_fd = None
-    try:
+    if _HAS_DIR_FD:
+        campaign_fd = None
+        data_fd = None
+        try:
+            root = Path(campaigns_root).expanduser().resolve()
+            campaign = Path(campaign_dir).expanduser().resolve()
+            campaign.relative_to(root)
+            directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+            campaign_fd = os.open(campaign, directory_flags)
+            data_fd = os.open("data", directory_flags, dir_fd=campaign_fd)
+            yield data_fd
+        finally:
+            if data_fd is not None:
+                os.close(data_fd)
+            if campaign_fd is not None:
+                os.close(campaign_fd)
+    else:
         root = Path(campaigns_root).expanduser().resolve()
         campaign = Path(campaign_dir).expanduser().resolve()
         campaign.relative_to(root)
-        directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
-        campaign_fd = os.open(campaign, directory_flags)
-        data_fd = os.open("data", directory_flags, dir_fd=campaign_fd)
-        yield data_fd
-    finally:
-        if data_fd is not None:
-            os.close(data_fd)
-        if campaign_fd is not None:
-            os.close(campaign_fd)
+        data_dir = campaign / "data"
+        if data_dir.is_symlink():
+            raise OSError("Symlinked data directory rejected")
+        real_data = data_dir.resolve()
+        real_data.relative_to(root)
+        yield real_data
 
 
-def _read_status_bytes(data_fd: int) -> bytes | None:
-    status_fd = None
-    try:
-        status_fd = os.open(
-            STATUS_FILENAME,
-            os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
-            dir_fd=data_fd,
-        )
-        file_stat = os.fstat(status_fd)
-        if not stat.S_ISREG(file_stat.st_mode) or file_stat.st_size > MAX_STATUS_BYTES:
+def _read_status_bytes(data_ref: Any) -> bytes | None:
+    if isinstance(data_ref, int):
+        status_fd = None
+        try:
+            status_fd = os.open(
+                STATUS_FILENAME,
+                os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0),
+                dir_fd=data_ref,
+            )
+            file_stat = os.fstat(status_fd)
+            if not stat.S_ISREG(file_stat.st_mode) or file_stat.st_size > MAX_STATUS_BYTES:
+                return None
+
+            chunks = []
+            remaining = MAX_STATUS_BYTES + 1
+            while remaining > 0:
+                chunk = os.read(status_fd, min(8192, remaining))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            content = b"".join(chunks)
+            return content if len(content) <= MAX_STATUS_BYTES else None
+        finally:
+            if status_fd is not None:
+                os.close(status_fd)
+    else:
+        status_path = Path(data_ref) / STATUS_FILENAME
+        if status_path.is_symlink() or not status_path.is_file():
             return None
-
-        chunks = []
-        remaining = MAX_STATUS_BYTES + 1
-        while remaining > 0:
-            chunk = os.read(status_fd, min(8192, remaining))
-            if not chunk:
-                break
-            chunks.append(chunk)
-            remaining -= len(chunk)
-        content = b"".join(chunks)
-        return content if len(content) <= MAX_STATUS_BYTES else None
-    finally:
-        if status_fd is not None:
-            os.close(status_fd)
+        st = status_path.stat()
+        if st.st_size > MAX_STATUS_BYTES:
+            return None
+        return status_path.read_bytes()
 
 
 def read_pipeline_progress(
@@ -183,15 +211,20 @@ def clear_pipeline_progress(
         with _open_campaign_data_dir(
             campaign_dir,
             campaigns_root=campaigns_root,
-        ) as data_fd:
-            file_stat = os.stat(
-                STATUS_FILENAME,
-                dir_fd=data_fd,
-                follow_symlinks=False,
-            )
-            if not stat.S_ISREG(file_stat.st_mode):
-                return
-            os.unlink(STATUS_FILENAME, dir_fd=data_fd)
+        ) as data_ref:
+            if isinstance(data_ref, int):
+                file_stat = os.stat(
+                    STATUS_FILENAME,
+                    dir_fd=data_ref,
+                    follow_symlinks=False,
+                )
+                if not stat.S_ISREG(file_stat.st_mode):
+                    return
+                os.unlink(STATUS_FILENAME, dir_fd=data_ref)
+            else:
+                status_path = Path(data_ref) / STATUS_FILENAME
+                if not status_path.is_symlink() and status_path.is_file():
+                    status_path.unlink()
     except (OSError, ValueError, TypeError):
         return
 

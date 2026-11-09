@@ -47,10 +47,15 @@ export function CandidateDetailModal({ candidate, scoringExplainer, onClose, onE
     candidate.profileUrl || candidate.profile_url
   );
 
+  const safeProfileUrl =
+    candidate?.profileUrl && /^https?:\/\//i.test(candidate.profileUrl.trim())
+      ? candidate.profileUrl.trim()
+      : null;
+
   return (
     <>
-      <Modal title="Candidate Details" onClose={onClose}>
-        <div className="flex flex-col h-[75vh]">
+      <Modal title="Candidate Details" onClose={onClose} size="max-w-4xl">
+        <div className="flex flex-col min-h-[50vh]">
         {/* Header & Progress Bar */}
         <div className="shrink-0 border-b border-slate-100 pb-4 mb-4">
           <div className="flex justify-between items-start mb-4">
@@ -63,8 +68,8 @@ export function CandidateDetailModal({ candidate, scoringExplainer, onClose, onE
               </div>
               <p className="text-slate-500 font-medium">{candidate.role || candidate.current_title || "Unknown Role"}</p>
             </div>
-            {candidate.profileUrl && (
-              <a href={candidate.profileUrl} target="_blank" rel="noopener noreferrer">
+            {safeProfileUrl && (
+              <a href={safeProfileUrl} target="_blank" rel="noopener noreferrer">
                 <Button variant="outline" size="sm" className="text-indigo-700 border-indigo-200 hover:bg-indigo-50">
                   {platformInfo.profileButtonLabel}
                 </Button>

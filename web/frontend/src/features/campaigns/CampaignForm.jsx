@@ -2,10 +2,18 @@ import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
 import { InputField } from "../../components/ui/InputField";
 import { SkillSelector } from "../../components/ui/SkillSelector";
+import { PlatformSourceSelector } from "./PlatformSourceSelector";
 
 export function CampaignForm({
   form,
   updateForm,
+  pipelineConfig,
+  onPipelineConfigChange,
+  onLocationChange,
+  onAddLocation,
+  onRemoveLocation,
+  pipelineConfigLoading = false,
+  saving = false,
   skillInput,
   setSkillInput,
   selectedSkills,
@@ -19,25 +27,43 @@ export function CampaignForm({
   onClose,
   onSave,
   submitLabel = "Save Campaign",
+  isModal = false,
 }) {
-  return (
-    <Card className="mb-6 p-5">
-      <div className="mb-5 flex items-start justify-between gap-4">
-        <div>
-          <h3 className="text-base font-semibold text-slate-900">Campaign Form</h3>
-          <p className="mt-1 text-sm text-slate-500">
-            Add or update campaign search criteria.
-          </p>
-        </div>
+  const Container = isModal ? "div" : Card;
+  const containerProps = isModal ? { className: "space-y-4" } : { className: "mb-6 p-5" };
 
-        <Button variant="outline" onClick={onClose}>
-          Close
-        </Button>
-      </div>
+  return (
+    <Container {...containerProps}>
+      {!isModal && (
+        <div className="mb-5 flex items-start justify-between gap-4">
+          <div>
+            <h3 className="text-base font-semibold text-slate-900">Edit Campaign &amp; Pipeline Configuration</h3>
+            <p className="mt-1 text-sm text-slate-500">
+              Update campaign details, locations, platform sources, job description, and filter criteria.
+            </p>
+          </div>
+
+          <Button variant="outline" onClick={onClose}>
+            Close
+          </Button>
+        </div>
+      )}
+
+      {isModal && (
+        <p className="mb-2 text-sm text-slate-500">
+          Update campaign details, locations, platform sources, job description, and filter criteria.
+        </p>
+      )}
 
       {formError && (
         <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
           {formError}
+        </div>
+      )}
+
+      {pipelineConfigLoading && (
+        <div className="mb-4 rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+          Loading campaign pipeline configuration...
         </div>
       )}
 
@@ -50,18 +76,28 @@ export function CampaignForm({
         />
 
         <InputField
-          label="Location *"
-          placeholder="e.g. Istanbul, Remote, Hybrid"
-          value={form.location}
-          onChange={(value) => updateForm("location", value)}
-        />
-
-        <InputField
           label="Position name *"
           placeholder="e.g. Senior Data Scientist"
           value={form.positionName}
           onChange={(value) => updateForm("positionName", value)}
         />
+
+        {pipelineConfig && onPipelineConfigChange && (
+          <label className="block text-sm md:col-span-2">
+            <span className="mb-1 block font-medium text-slate-700">
+              Campaign Description *
+            </span>
+            <textarea
+              value={pipelineConfig.pipelineDescription || ""}
+              onChange={(event) =>
+                onPipelineConfigChange("pipelineDescription", event.target.value)
+              }
+              rows={3}
+              placeholder="Short summary of the hiring campaign and target profile"
+              className="w-full rounded-lg border border-slate-300 px-4 py-3 text-sm outline-none focus:border-indigo-600"
+            />
+          </label>
+        )}
 
         <label className="block">
           <span className="mb-1 block text-sm font-medium text-slate-700">
@@ -106,6 +142,15 @@ export function CampaignForm({
           </select>
         </label>
 
+        {!pipelineConfig && (
+          <InputField
+            label="Location *"
+            placeholder="e.g. Istanbul, Remote, Hybrid"
+            value={form.location}
+            onChange={(value) => updateForm("location", value)}
+          />
+        )}
+
         <label className="block md:col-span-2">
           <span className="mb-1 block text-sm font-medium text-slate-700">
             Sample CV input, PDF only - optional
@@ -126,6 +171,100 @@ export function CampaignForm({
         </label>
       </div>
 
+      {pipelineConfig && (
+        <>
+          <div className="mt-5">
+            <div className="mb-2 flex items-center justify-between">
+              <p className="text-sm font-medium text-slate-700">Locations *</p>
+              {onAddLocation && (
+                <button
+                  type="button"
+                  className="text-sm font-medium text-indigo-700"
+                  onClick={onAddLocation}
+                >
+                  + Add Location
+                </button>
+              )}
+            </div>
+
+            <div className="space-y-2">
+              {(pipelineConfig.locations || []).map((location, index) => (
+                <div key={index} className="grid gap-2 md:grid-cols-[1fr_2fr_auto]">
+                  <input
+                    value={location.name || ""}
+                    onChange={(event) =>
+                      onLocationChange && onLocationChange(index, "name", event.target.value)
+                    }
+                    placeholder="name (example: turkey)"
+                    className="rounded-lg border border-slate-300 px-3 py-2.5 text-sm outline-none focus:border-indigo-600"
+                  />
+                  <input
+                    value={location.hint || ""}
+                    onChange={(event) =>
+                      onLocationChange && onLocationChange(index, "hint", event.target.value)
+                    }
+                    placeholder="hint (example: Focus on Turkey-based professionals)"
+                    className="rounded-lg border border-slate-300 px-3 py-2.5 text-sm outline-none focus:border-indigo-600"
+                  />
+                  {onRemoveLocation && (
+                    <button
+                      type="button"
+                      onClick={() => onRemoveLocation(index)}
+                      className="rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-600 hover:bg-slate-50"
+                    >
+                      Remove
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <PlatformSourceSelector
+            platforms={pipelineConfig.platforms || []}
+            activityDays={pipelineConfig.activityDays ?? 180}
+            onPlatformsChange={(nextPlatforms) =>
+              onPipelineConfigChange && onPipelineConfigChange("platforms", nextPlatforms)
+            }
+            onActivityDaysChange={(nextDays) =>
+              onPipelineConfigChange && onPipelineConfigChange("activityDays", nextDays)
+            }
+          />
+
+          <div className="mt-4 grid gap-4 xl:grid-cols-2">
+            <label className="text-sm">
+              <span className="mb-1 block font-medium text-slate-700">
+                Job Description (Markdown) *
+              </span>
+              <textarea
+                value={pipelineConfig.jobDescription || ""}
+                onChange={(event) =>
+                  onPipelineConfigChange &&
+                  onPipelineConfigChange("jobDescription", event.target.value)
+                }
+                rows={12}
+                className="w-full rounded-lg border border-slate-300 px-3 py-2.5 font-mono text-xs outline-none focus:border-indigo-600"
+              />
+            </label>
+
+            <label className="text-sm">
+              <span className="mb-1 block font-medium text-slate-700">
+                Filter Criteria (Markdown) *
+              </span>
+              <textarea
+                value={pipelineConfig.filterCriteria || ""}
+                onChange={(event) =>
+                  onPipelineConfigChange &&
+                  onPipelineConfigChange("filterCriteria", event.target.value)
+                }
+                rows={12}
+                className="w-full rounded-lg border border-slate-300 px-3 py-2.5 font-mono text-xs outline-none focus:border-indigo-600"
+              />
+            </label>
+          </div>
+        </>
+      )}
+
       <SkillSelector
         skillInput={skillInput}
         setSkillInput={setSkillInput}
@@ -136,15 +275,15 @@ export function CampaignForm({
         handleSkillKeyDown={handleSkillKeyDown}
       />
 
-      <div className="mt-5 flex flex-wrap gap-2">
-        <Button onClick={onSave} variant="dark">
-          {submitLabel}
-        </Button>
-
-        <Button onClick={onClose} variant="outline">
+      <div className="mt-6 flex flex-wrap items-center justify-end gap-3 border-t border-slate-200 pt-4">
+        <Button onClick={onClose} variant="outline" disabled={saving}>
           Cancel
         </Button>
+
+        <Button onClick={onSave} variant="dark" disabled={saving || pipelineConfigLoading}>
+          {saving ? "Saving..." : submitLabel}
+        </Button>
       </div>
-    </Card>
+    </Container>
   );
 }

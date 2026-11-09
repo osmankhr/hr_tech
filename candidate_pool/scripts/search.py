@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -24,6 +25,8 @@ from platform_searchers import (
     DEFAULT_ACTIVITY_DAYS,
     SUPPORTED_COMMUNITY_PLATFORMS,
     MultiPlatformCandidateSearcher,
+    is_ing_affiliated,
+    _has_turkish_author_or_location_signal,
 )
 
 load_dotenv()
@@ -547,6 +550,21 @@ class ExaSearcher:
             "scraped_at": datetime.now(timezone.utc).isoformat(),
         }
 
+    def _clean_social_feed_text(self, text: str | None) -> str | None:
+        """Strip 3rd-party LinkedIn social activity feeds so candidates aren't credited with others' posts."""
+        if not text:
+            return text
+        cleaned_lines = []
+        for line in text.splitlines():
+            if re.search(
+                r"-\s*\[\d{4}-\d{2}-\d{2}[^\]]*(?:liked|commented|shared)\s+this\]",
+                line,
+                re.IGNORECASE,
+            ):
+                continue
+            cleaned_lines.append(line)
+        return "\n".join(cleaned_lines)
+
     def _search_query(
         self, query: str, loc_name: str, seen_urls: set[str]
     ) -> list[dict[str, Any]]:
@@ -571,18 +589,45 @@ class ExaSearcher:
             logger.exception("Exa search failed for query %r", query)
             return []
 
+        loc_lower = (loc_name or "").strip().lower()
         candidates = []
         for r in response.results:
             if r.url in seen_urls or r.url in self._existing_urls:
                 continue
+
+            raw_title = str(getattr(r, "title", "") or "").strip()
+            raw_text = str(getattr(r, "text", "") or "").strip()
+
+            # 1. ING Hard Exclusion
+            if is_ing_affiliated(raw_title) or is_ing_affiliated(raw_text):
+                logger.info("[exa] Skipping ING-affiliated profile: %s", r.url)
+                continue
+
+            # 2. Foreign location rejection if target location is Turkey/Türkiye
+            if loc_lower in {"turkey", "türkiye"}:
+                # LinkedIn profiles in Exa typically include a header line like "City, Country (XX)" or "Country (XX)"
+                header_match = re.search(r"\n\s*([A-Za-z\s,]+)\s*\(([A-Z]{2})\)\s*\n", raw_text[:1200])
+                if header_match:
+                    country_name = header_match.group(1).strip().lower()
+                    country_code = header_match.group(2).upper()
+                    if country_code != "TR" and not any(k in country_name for k in ("turkey", "türkiye", "istanbul", "ankara", "izmir")):
+                        logger.info(
+                            "[exa] Skipping foreign profile located in %s (%s): %s",
+                            country_name,
+                            country_code,
+                            r.url,
+                        )
+                        continue
+
             seen_urls.add(r.url)
+            cleaned_text = self._clean_social_feed_text(raw_text)
             candidates.append(
                 {
                     "url": r.url,
                     "title": r.title,
                     "score": r.score,
                     "published_date": r.published_date,
-                    "text": getattr(r, "text", None),
+                    "text": cleaned_text,
                     "highlights": getattr(r, "highlights", None),
                     "highlight_scores": getattr(r, "highlight_scores", None),
                     "query": query,

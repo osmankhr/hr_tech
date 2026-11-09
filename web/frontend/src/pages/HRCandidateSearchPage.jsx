@@ -118,6 +118,10 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
 
   const [selectedCampaign, setSelectedCampaign] = useState(null);
   const [editingCampaign, setEditingCampaign] = useState(null);
+  const [editingPipelineConfig, setEditingPipelineConfig] = useState(null);
+  const [editingPipelineConfigLoading, setEditingPipelineConfigLoading] = useState(false);
+  const [editingHasExistingPipeline, setEditingHasExistingPipeline] = useState(false);
+  const [editSaving, setEditSaving] = useState(false);
   const [campaignToDelete, setCampaignToDelete] = useState(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [deleteError, setDeleteError] = useState("");
@@ -324,20 +328,20 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
     try {
       const data = await campaignApi.getCandidatesByCampaign(
         dashboardCampaignId,
-        dashboardPage,
-        10,
+        1,
+        300,
         dashboardSelectedVersion || null
       );
 
       const mapped = (data.items || []).map(mapCampaignCandidate);
       setDashboardCandidates(mapped);
-      setDashboardTotalPages(data.pagination?.total_pages || 0);
+      setDashboardTotalPages(Math.max(1, Math.ceil(mapped.length / 10)));
     } catch (error) {
       setApiError(error.message || "Could not load campaign candidates.");
     } finally {
       setDashboardLoadingCandidates(false);
     }
-  }, [dashboardCampaignId, dashboardPage, dashboardSelectedVersion, setApiError]);
+  }, [dashboardCampaignId, dashboardSelectedVersion, setApiError]);
 
   useEffect(() => {
     loadDashboardCandidates();
@@ -756,26 +760,170 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
     }
   };
 
-  const openEditCampaign = (campaign) => {
+  const openEditCampaign = async (campaign) => {
     setSelectedCampaign(null);
     setEditingCampaign(campaign);
     editFormHook.resetForm(campaignToEditForm(campaign));
+    setEditingPipelineConfigLoading(true);
+    setEditingHasExistingPipeline(false);
+
+    const fallbackConfig = {
+      pipelineDescription: campaign.campaignName || "",
+      locations: buildInitialLocations(campaign.location || ""),
+      platforms: ["github", "huggingface", "kaggle"],
+      activityDays: 180,
+      jobDescription: DEFAULT_JOB_DESCRIPTION,
+      filterCriteria: DEFAULT_FILTER_CRITERIA,
+    };
+
+    try {
+      const rows = await campaignApi.getConfigVersions(campaign.id);
+      const versions = Array.isArray(rows) ? rows.map(mapConfigVersionFromApi) : [];
+      const current = versions.find((v) => v.isCurrent) || versions[0] || null;
+      if (current) {
+        setEditingHasExistingPipeline(true);
+        setEditingPipelineConfig({
+          pipelineDescription: current.pipelineDescription || campaign.campaignName || "",
+          locations:
+            Array.isArray(current.locations) && current.locations.length > 0
+              ? current.locations
+              : buildInitialLocations(campaign.location || ""),
+          platforms: Array.isArray(current.platforms)
+            ? current.platforms
+            : ["github", "huggingface", "kaggle"],
+          activityDays: Number(current.activityDays || 180),
+          jobDescription: current.jobDescription || DEFAULT_JOB_DESCRIPTION,
+          filterCriteria: current.filterCriteria || DEFAULT_FILTER_CRITERIA,
+        });
+      } else {
+        setEditingPipelineConfig(fallbackConfig);
+      }
+    } catch {
+      setEditingPipelineConfig(fallbackConfig);
+    } finally {
+      setEditingPipelineConfigLoading(false);
+    }
+  };
+
+  const updateEditingPipelineConfig = (field, value) => {
+    setEditingPipelineConfig((prev) => (prev ? { ...prev, [field]: value } : prev));
+    editFormHook.setFormError("");
+  };
+
+  const updateEditingLocation = (index, key, value) => {
+    setEditingPipelineConfig((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        locations: (prev.locations || []).map((item, idx) =>
+          idx === index ? { ...item, [key]: value } : item
+        ),
+      };
+    });
+  };
+
+  const addEditingLocation = () => {
+    setEditingPipelineConfig((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        locations: [...(prev.locations || []), { name: "", hint: "" }],
+      };
+    });
+  };
+
+  const removeEditingLocation = (index) => {
+    setEditingPipelineConfig((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        locations: (prev.locations || []).filter((_, idx) => idx !== index),
+      };
+    });
   };
 
   const updateCampaign = async () => {
+    if (!editingCampaign) return;
+    editFormHook.setFormError("");
+
+    const trimmedName = (editFormHook.campaignForm.campaignName || "").trim();
+    if (!trimmedName) {
+      editFormHook.setFormError("Campaign name is required.");
+      return;
+    }
+
+    let cleanedLocations = [];
+    if (editingPipelineConfig) {
+      cleanedLocations = (editingPipelineConfig.locations || [])
+        .map((item) => ({
+          name: (item.name || "").trim(),
+          hint: (item.hint || "").trim(),
+        }))
+        .filter((item) => item.name);
+
+      if (cleanedLocations.length === 0) {
+        editFormHook.setFormError("At least one location is required.");
+        return;
+      }
+
+      if (
+        !(editingPipelineConfig.jobDescription || "").trim() ||
+        !(editingPipelineConfig.filterCriteria || "").trim()
+      ) {
+        editFormHook.setFormError("Job description and filter criteria are required.");
+        return;
+      }
+    }
+
+    setEditSaving(true);
     try {
+      const syncedForm = {
+        ...editFormHook.campaignForm,
+        campaignName: trimmedName,
+        positionName: (editFormHook.campaignForm.positionName || trimmedName).trim(),
+        location:
+          cleanedLocations.length > 0
+            ? cleanedLocations.map((l) => l.name).join(", ")
+            : editFormHook.campaignForm.location,
+      };
+
       await campaignApi.update(
         editingCampaign.id,
-        campaignToFormData(
-          editFormHook.campaignForm,
-          editFormHook.selectedSkills
-        )
+        campaignToFormData(syncedForm, editFormHook.selectedSkills)
       );
 
+      if (editingPipelineConfig) {
+        const configPayload = {
+          pipelineName: trimmedName,
+          pipelineDescription:
+            (editingPipelineConfig.pipelineDescription || trimmedName).trim(),
+          locations: cleanedLocations,
+          platforms: Array.isArray(editingPipelineConfig.platforms)
+            ? editingPipelineConfig.platforms
+            : [],
+          activityDays: Number(editingPipelineConfig.activityDays || 180),
+          jobDescription: editingPipelineConfig.jobDescription,
+          filterCriteria: editingPipelineConfig.filterCriteria,
+        };
+
+        if (editingHasExistingPipeline) {
+          await campaignApi.updateConfig(editingCampaign.id, configPayload);
+        } else {
+          await campaignApi.setupPipeline(editingCampaign.id, configPayload);
+        }
+      }
+
+      const editedId = editingCampaign.id;
       setEditingCampaign(null);
+      setEditingPipelineConfig(null);
       await Promise.all([loadCampaigns(), loadSkills()]);
+      if (String(pipelineCampaignId) === String(editedId)) {
+        loadConfigVersions(editedId).catch(() => {});
+      }
     } catch (error) {
-      editFormHook.setFormError(error.message);
+      editFormHook.setFormError(error.message || "Could not update campaign.");
+    } finally {
+      setEditSaving(false);
     }
   };
 
@@ -1023,10 +1171,15 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
     }
   };
 
+  const handleSelectView = (nextView) => {
+    setShowCreate(false);
+    setView(nextView);
+  };
+
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
       <div className="mx-auto flex gap-6 p-6">
-        <Sidebar view={view} setView={setView} />
+        <Sidebar view={showCreate ? "" : view} setView={handleSelectView} />
 
         <main className="flex-1">
           <AppHeader
@@ -1050,9 +1203,11 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
               <button
                 key={id}
                 type="button"
-                onClick={() => setView(id)}
+                onClick={() => handleSelectView(id)}
                 className={`rounded-xl px-3 py-2 text-xs font-medium ${
-                  view === id ? "bg-slate-900 text-white" : "bg-slate-100 text-slate-700"
+                  !showCreate && view === id
+                    ? "bg-slate-900 text-white"
+                    : "bg-slate-100 text-slate-700"
                 }`}
               >
                 {label}
@@ -1455,8 +1610,18 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
       <CampaignEditModal
         campaign={editingCampaign}
         formHook={editFormHook}
+        pipelineConfig={editingPipelineConfig}
+        onPipelineConfigChange={updateEditingPipelineConfig}
+        onLocationChange={updateEditingLocation}
+        onAddLocation={addEditingLocation}
+        onRemoveLocation={removeEditingLocation}
+        pipelineConfigLoading={editingPipelineConfigLoading}
+        saving={editSaving}
         skillSuggestions={skillSuggestions}
-        onClose={() => setEditingCampaign(null)}
+        onClose={() => {
+          setEditingCampaign(null);
+          setEditingPipelineConfig(null);
+        }}
         onSave={updateCampaign}
       />
 

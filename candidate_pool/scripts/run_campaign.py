@@ -23,7 +23,7 @@ from dotenv import load_dotenv
 # Allow sibling-module imports when run as a script
 sys.path.insert(0, str(Path(__file__).parent))
 
-load_dotenv()
+load_dotenv(override=True)
 
 
 def _setup_logging(log_dir: Path) -> None:

@@ -64,6 +64,7 @@ class PlatformSettingsAndConfigTests(unittest.TestCase):
             res = main.update_integration_settings(
                 payload={
                     "credentials": {
+                        "KAGGLE_API_TOKEN": "KGAT_75191721824a38166ee2383eddcbd0ec",
                         "KAGGLE_USERNAME": "mustafa_kaggle",
                         "KAGGLE_KEY": "KGAT_secret1234567890",
                         "GITHUB_TOKEN": "ghp_abcdefghijklmnop1234",
@@ -77,6 +78,8 @@ class PlatformSettingsAndConfigTests(unittest.TestCase):
             self.assertTrue(res["success"])
             self.assertEqual(res["keys"]["KAGGLE_USERNAME"]["masked"], "mustafa_kaggle")
             # Raw secret must NEVER be present in masked output
+            self.assertNotIn("KGAT_7519", res["keys"]["KAGGLE_API_TOKEN"]["masked"])
+            self.assertTrue(res["keys"]["KAGGLE_API_TOKEN"]["masked"].endswith("d0ec"))
             self.assertNotIn("KGAT_secret", res["keys"]["KAGGLE_KEY"]["masked"])
             self.assertTrue(res["keys"]["KAGGLE_KEY"]["masked"].endswith("7890"))
             self.assertTrue(res["platforms"]["kaggle"]["official_api_configured"])

@@ -121,6 +121,18 @@ _STOP_WORDS: frozenset[str] = frozenset(
         "excluding",
         "employees",
         "employee",
+        "senior",
+        "lead",
+        "staff",
+        "principal",
+        "junior",
+        "engineer",
+        "scientist",
+        "developer",
+        "researcher",
+        "specialist",
+        "large",
+        "models",
     }
 )
 
@@ -238,6 +250,42 @@ def is_ing_affiliated(text: str | None) -> bool:
     if not text or not isinstance(text, str):
         return False
     return bool(_ING_EMPLOYER_RE.search(text))
+
+
+_TURKISH_CHARS = frozenset("ğüşöçĞÜŞÖÇıİ")
+_TURKISH_SIGNAL_RE = re.compile(
+    r"\b(turkey|turkiye|türkiye|turkish|türkçe|istanbul|ankara|izmir|bursa|antalya|kocaeli|"
+    r"eskişehir|eskisehir|kayseri|konya|adana|gaziantep|trabzon|manisa|elazig|odtu|metu|itu|"
+    r"bogazici|boğaziçi|hacettepe|bilkent|sabanci|koç|yildiz|marmara|ege|dokuz eylül|"
+    r"ahmet|mehmet|mustafa|ali|hüseyin|huseyin|hasan|ibrahim|ismail|osman|yusuf|murat|ömer|omer|"
+    r"ramazan|halil|süleyman|suleyman|abdullah|mahmut|recep|salih|fatih|kadir|emre|hakan|adem|"
+    r"kemal|yaşar|yasar|bekir|musa|metin|bayram|serkan|orhan|burak|furkan|yasin|gökhan|gokhan|"
+    r"uğur|ugur|onur|mert|erkan|volkan|ilker|tolga|sinan|cenk|barış|baris|deniz|eren|utku|"
+    r"alper|alperen|can|cem|kerem|kaan|berk|berkay|batuhan|yiğit|yigit|oğuz|oguz|oğuzhan|oguzhan|"
+    r"tarık|tarik|selim|erdal|erdem|engin|enis|enes|erhan|ersan|faruk|fırat|firat|güner|guner|"
+    r"güneş|gunes|gürdal|gurdal|habil|okan|oktay|ozan|özgür|ozgur|sercan|soner|şükrü|sukru|"
+    r"turabi|vedat|yağız|yagiz|yavuz|yunus|zafer|ayşe|ayse|fatma|emine|hatice|zeynep|elif|"
+    r"merve|büşra|busra|zehra|esra|hanife|kübra|kubra|havva|cemile|özlem|ozlem|sevgi|yasemin|"
+    r"dilek|derya|filiz|gül|gul|pınar|pinar|ebru|betül|betul|eda|ecem|gizem|gamze|gonca|hande|"
+    r"irem|melis|melisa|mine|nazlı|nazli|pelin|rabia|rukiye|seda|selin|simge|tuğba|tugba|"
+    r"tuğçe|tugce|yağmur|yagmur|beril|dicle|dilge|azra|beyzanur|ipek|"
+    r"yılmaz|yilmaz|kaya|demir|çelik|celik|şahin|sahin|yıldız|yildiz|yıldırım|yildirim|"
+    r"öztürk|ozturk|aydın|aydin|özdemir|ozdemir|arslan|aslan|doğan|dogan|kılıç|kilic|"
+    r"aslan|çetin|cetin|kara|koç|koc|kurt|özkan|ozkan|şimşek|simsek|polat|özcan|ozcan|"
+    r"korkmaz|çakır|cakir|erdoğan|erdogan|yavuz|can|acar|şen|sen|aktaş|aktas|güler|guler|"
+    r"yalçın|yalcin|güneş|gunes|bozkurt|bulut|keskin|ümit|umit|avcı|avci|कोçak|kocak)\b",
+    re.IGNORECASE,
+)
+
+
+def _has_turkish_author_or_location_signal(*parts: str | None) -> bool:
+    """Return True if any of the given author/bio/location strings contain Turkish characters, locations, or names."""
+    combined = " ".join(p for p in parts if p and isinstance(p, str))
+    if not combined.strip():
+        return False
+    if any(ch in _TURKISH_CHARS for ch in combined):
+        return True
+    return bool(_TURKISH_SIGNAL_RE.search(combined))
 
 
 def extract_search_keywords(
@@ -384,7 +432,7 @@ class GitHubCandidateSearcher:
 
     def _build_user_search_query(self, raw_query: str, loc_name: str) -> str:
         """Construct a GitHub `/search/users` query string with location and keyword qualifiers."""
-        keywords = extract_search_keywords(raw_query, loc_name, max_terms=4)
+        keywords = extract_search_keywords(raw_query, loc_name, max_terms=2)
         parts = [keywords]
         clean_loc = (loc_name or "").strip()
         if clean_loc and clean_loc.lower() not in {"global", "worldwide", "all"}:
@@ -541,6 +589,9 @@ class GitHubCandidateSearcher:
             return None
 
         full_name = str(profile.get("name") or "").strip() or username
+        # Reject repo URLs or book links mistakenly set as the GitHub profile name
+        if "/" in full_name or full_name.lower().startswith("http") or "github.com" in full_name.lower():
+            full_name = username
         bio = str(profile.get("bio") or "").strip()
         company = str(profile.get("company") or "").strip()
         location_text = str(profile.get("location") or "").strip()
@@ -819,6 +870,23 @@ class HuggingFaceCandidateSearcher:
             logger.info("[huggingface] Skipping ING-affiliated author: %s", author)
             return None
 
+        low_name = full_name.lower()
+        low_author = author.lower()
+        low_bio = bio.lower()
+        if (
+            low_name.startswith("team ")
+            or low_name.endswith(".ai")
+            or low_name.endswith(".io")
+            or low_author in {"mradermacher", "speechdataai", "quantfactory"}
+            or any(s in low_bio for s in ("15-year-old", "9th-grade", "high school student"))
+        ):
+            return None
+
+        if (loc_name or "").strip().lower() in {"turkey", "türkiye"}:
+            # Verify the author (not just a multilingual dataset card) has a Turkish signal
+            if not _has_turkish_author_or_location_signal(full_name, author, bio):
+                return None
+
         num_models = int(overview.get("numModels") or len([1 for k, _ in artifacts if k == "models"]))
         num_datasets = int(overview.get("numDatasets") or len([1 for k, _ in artifacts if k == "datasets"]))
         num_spaces = int(overview.get("numSpaces") or 0)
@@ -918,6 +986,7 @@ class KaggleCandidateSearcher:
         exa_client: Any | None = None,
         kaggle_username: str | None = None,
         kaggle_key: str | None = None,
+        kaggle_api_token: str | None = None,
         activity_days: int = DEFAULT_ACTIVITY_DAYS,
         num_results: int = 15,
         require_recent_activity: bool = True,
@@ -934,22 +1003,57 @@ class KaggleCandidateSearcher:
             if kaggle_key is not None
             else (os.environ.get("KAGGLE_KEY") or "").strip()
         )
+        self.kaggle_api_token = (
+            kaggle_api_token
+            if kaggle_api_token is not None
+            else (os.environ.get("KAGGLE_API_TOKEN") or "").strip()
+        )
         self.activity_days = activity_days
         self.num_results = max(1, min(num_results, 50))
         self.require_recent_activity = require_recent_activity
         self.timeout = timeout
 
     def _has_kaggle_api_credentials(self) -> bool:
-        return bool(self.kaggle_username and self.kaggle_key)
+        """Return True if either a v2 Bearer token (KAGGLE_API_TOKEN / KGAT_*) or legacy username+key is configured."""
+        return bool(
+            self.kaggle_api_token
+            or self.kaggle_key.startswith("KGAT_")
+            or (self.kaggle_username and self.kaggle_key)
+        )
 
     def _kaggle_auth_headers(self) -> dict[str, str]:
-        """Build HTTP Basic Authorization header for Kaggle REST API."""
+        """Build HTTP Authorization header for Kaggle REST API (Bearer for KGAT_* tokens, Basic for legacy keys)."""
+        bearer = self.kaggle_api_token or (
+            self.kaggle_key if self.kaggle_key.startswith("KGAT_") else ""
+        )
+        if bearer:
+            return {
+                "Accept": "application/json",
+                "Authorization": f"Bearer {bearer}",
+            }
         token_bytes = f"{self.kaggle_username}:{self.kaggle_key}".encode("utf-8")
         encoded = base64.b64encode(token_bytes).decode("ascii")
         return {
             "Accept": "application/json",
             "Authorization": f"Basic {encoded}",
         }
+
+    def _fetch_user_kernels(self, username: str, page_size: int = 5) -> list[dict[str, Any]]:
+        """Fetch a specific Kaggle user's most recently executed kernels via Official REST API."""
+        if not self._has_kaggle_api_credentials() or not is_valid_identifier(username):
+            return []
+        params = urllib.parse.urlencode(
+            {
+                "user": username,
+                "sortBy": "dateRun",
+                "pageSize": max(1, min(page_size, 20)),
+            }
+        )
+        url = f"{self.BASE_URL}/kernels/list?{params}"
+        data = safe_json_get(url, headers=self._kaggle_auth_headers(), timeout=self.timeout)
+        if isinstance(data, list):
+            return [k for k in data if isinstance(k, dict)]
+        return []
 
     def search_query(
         self,
@@ -960,13 +1064,33 @@ class KaggleCandidateSearcher:
         existing_urls: set[str] | None = None,
         now: datetime | None = None,
     ) -> list[dict[str, Any]]:
-        """Search Kaggle via official API (if credentials present) and/or Exa domain search."""
+        """Search Kaggle via location-aware Exa profile search + Official API activity verification."""
         existing = existing_urls or set()
         reference_now = now or datetime.now(timezone.utc)
         candidates: list[dict[str, Any]] = []
+        has_specific_location = bool(
+            (loc_name or "").strip()
+            and (loc_name or "").strip().lower() not in {"global", "worldwide", "all"}
+        )
 
-        # Channel 1: Kaggle Official API (Kernels & Datasets sorted by recent execution/update)
-        if self._has_kaggle_api_credentials():
+        # When searching a specific location (e.g. "turkey") and Exa is available, discover
+        # location-matched Kaggle user profiles via Exa first (since Kaggle's /kernels/list
+        # endpoint searches notebook dataset text rather than user profile country), and then
+        # enrich/verify each user's live notebook activity via the Official Kaggle REST API.
+        if self.exa_client is not None and has_specific_location:
+            exa_candidates = self._search_via_exa_domain(
+                query=query,
+                loc_name=loc_name,
+                seen_urls=seen_urls,
+                existing_urls=existing,
+                limit=self.num_results,
+                now=reference_now,
+            )
+            candidates.extend(exa_candidates)
+
+        # Official Kaggle REST API channel (primary when no location filter or no Exa client,
+        # or supplementary when remaining slots exist).
+        if self._has_kaggle_api_credentials() and len(candidates) < self.num_results:
             api_candidates = self._search_via_kaggle_api(
                 query=query,
                 loc_name=loc_name,
@@ -976,8 +1100,8 @@ class KaggleCandidateSearcher:
             )
             candidates.extend(api_candidates)
 
-        # Channel 2: Exa domain-restricted Kaggle profile discovery
-        if self.exa_client is not None and len(candidates) < self.num_results:
+        # Fallback Exa domain search when no specific location was set initially
+        if self.exa_client is not None and not has_specific_location and len(candidates) < self.num_results:
             remaining = self.num_results - len(candidates)
             exa_candidates = self._search_via_exa_domain(
                 query=query,
@@ -1039,6 +1163,34 @@ class KaggleCandidateSearcher:
             if is_ing_affiliated(display_name) or is_ing_affiliated(kernel_title):
                 continue
 
+            # Exclude generic sports/toy datasets or boilerplate homework notebooks
+            low_title = kernel_title.lower()
+            low_ref = ref.lower()
+            if any(
+                noise in low_title or noise in low_ref
+                for noise in (
+                    "world cup",
+                    "fifa",
+                    "football",
+                    "soccer",
+                    "olympic",
+                    "euro 20",
+                    "titanic",
+                    "house price",
+                    "nlp-lab-",
+                    "do-al-dil-lemeye-giri",
+                    "stage-0",
+                    "m1-submission",
+                    "alone-with-a-stranger",
+                    "rsna-knee",
+                )
+            ) or re.match(r"^notebook[0-9a-f]{6,}$", low_title):
+                continue
+
+            if (loc_name or "").strip().lower() in {"turkey", "türkiye"}:
+                if not _has_turkish_author_or_location_signal(display_name, username):
+                    continue
+
             highlights = [
                 f"Kaggle (@{username}): Active notebook/kernel contributor (last run: {last_run[:10] or 'recent'}).",
                 f"Featured Notebook: '{kernel_title}' ({votes} votes, ref: {ref}).",
@@ -1091,47 +1243,165 @@ class KaggleCandidateSearcher:
         limit: int,
         now: datetime,
     ) -> list[dict[str, Any]]:
-        """Search Kaggle profiles via Exa using `include_domains=['kaggle.com']`."""
+        """Search Kaggle user profiles via Exa using `include_domains=['kaggle.com']`."""
         keywords = extract_search_keywords(query, loc_name, max_terms=4)
-        kaggle_query = (
-            f"Kaggle Grandmaster OR Master OR Expert OR Competitions {keywords} {loc_name} excluding ING".strip()
-        )
-        cutoff_date = (now - timedelta(days=max(self.activity_days, 365))).strftime("%Y-%m-%dT00:00:00.000Z")
+        loc_lower = (loc_name or "").strip().lower()
+        if loc_lower in {"turkey", "türkiye"}:
+            kaggle_query = (
+                f"Kaggle Grandmaster OR Master OR Expert OR Data Scientist {keywords} "
+                f"Istanbul OR Ankara OR Izmir OR Turkey OR Türkiye excluding ING"
+            ).strip()
+        else:
+            kaggle_query = (
+                f"Kaggle Grandmaster OR Master OR Expert OR Data Scientist {keywords} {loc_name} excluding ING".strip()
+            )
 
+        # Note: Do NOT pass `start_published_date` when searching Kaggle user profiles on Exa,
+        # because user profile pages (`kaggle.com/<username>`) do not carry recent article
+        # publication dates in Exa's index (passing `start_published_date` restricts results
+        # to competition discussion writeups like `/c/.../writeups/...`).
         try:
             response = self.exa_client.search(
                 query=kaggle_query,
                 include_domains=["kaggle.com", "www.kaggle.com"],
                 type="auto",
-                num_results=max(1, limit),
-                start_published_date=cutoff_date if self.require_recent_activity else None,
+                num_results=max(10, limit * 2),
                 contents={"text": True, "highlights": {"num_sentences": 6, "highlights_per_url": 3}},
             )
         except Exception:
             logger.exception("[kaggle] Exa domain-scoped search failed for query %r", kaggle_query)
             return []
 
+        reserved_kaggle_paths = {
+            "c",
+            "code",
+            "competitions",
+            "datasets",
+            "discussions",
+            "discussion",
+            "learn",
+            "models",
+            "organizations",
+            "progression",
+            "rankings",
+            "account",
+            "terms",
+            "privacy",
+            "docs",
+            "blog",
+            "host",
+            "solutions",
+            "writeups",
+            "kernels",
+        }
+        allowed_profile_subtabs = {
+            "following",
+            "followers",
+            "competitions",
+            "code",
+            "datasets",
+            "discussion",
+        }
+
         candidates: list[dict[str, Any]] = []
         for r in getattr(response, "results", []) or []:
             raw_url = str(getattr(r, "url", "") or "").strip()
-            if not raw_url or raw_url in seen_urls or raw_url in existing_urls:
+            if not raw_url:
                 continue
 
-            title = str(getattr(r, "title", "") or "Kaggle Profile").strip()
+            parsed_path = urllib.parse.urlparse(raw_url).path.strip("/")
+            parts = [p.strip() for p in parsed_path.split("/") if p.strip()]
+            if not parts:
+                continue
+
+            first_seg = parts[0]
+            # Strictly require a Kaggle user profile path (`kaggle.com/<username>`),
+            # rejecting competition pages (`/c/...`, `/competitions/...`), notebook pages (`/code/...`), etc.
+            if first_seg.lower() in reserved_kaggle_paths or not is_valid_identifier(first_seg):
+                continue
+            if len(parts) > 1 and parts[1].lower() not in allowed_profile_subtabs:
+                continue
+
+            kaggle_username_cand = first_seg
+            canonical_url = f"https://www.kaggle.com/{kaggle_username_cand}"
+            if canonical_url in seen_urls or canonical_url in existing_urls or raw_url in seen_urls or raw_url in existing_urls:
+                continue
+
+            raw_title = str(getattr(r, "title", "") or "").strip()
             text = str(getattr(r, "text", "") or "").strip()
-            if is_ing_affiliated(title) or is_ing_affiliated(text):
+            if "Too many requests to GetCurrentUser" in text:
+                continue
+            if is_ing_affiliated(raw_title) or is_ing_affiliated(text):
                 continue
 
+            # Extract clean candidate display name from profile title ("Vedat Gul | Kaggle" -> "Vedat Gul")
+            display_name = re.sub(r"\s*[\|\-–—]\s*Kaggle.*$", "", raw_title, flags=re.IGNORECASE).strip()
+            if not display_name or display_name.lower() in {"kaggle", "kaggle profile"}:
+                heading_match = re.search(r"#\s+([^\n\r|#]+)", text)
+                display_name = heading_match.group(1).strip() if heading_match else kaggle_username_cand
+
+            # Reject entries whose title still looks like a competition solution writeup
+            if re.search(r"\b(\d+(st|nd|rd|th)\s+place|solution\s+writeup)\b", display_name, re.IGNORECASE):
+                continue
+
+            if loc_lower in {"turkey", "türkiye"}:
+                if not _has_turkish_author_or_location_signal(display_name, kaggle_username_cand, text):
+                    continue
+
+            seen_urls.add(canonical_url)
             seen_urls.add(raw_url)
             raw_highlights = getattr(r, "highlights", None) or []
             highlights = list(raw_highlights) if isinstance(raw_highlights, list) else []
-            highlights.insert(0, "Platform: Kaggle (Active Data Science / ML Profile)")
+            highlights.insert(0, f"Platform: Kaggle (@{kaggle_username_cand} — Active Data Science / ML Profile)")
+
+            info_dict: dict[str, Any] = {
+                "username": kaggle_username_cand,
+                "full_name": display_name,
+            }
+            if self._has_kaggle_api_credentials():
+                user_kernels = self._fetch_user_kernels(kaggle_username_cand, page_size=5)
+                if user_kernels:
+                    top_k = user_kernels[0]
+                    k_title = str(top_k.get("title") or top_k.get("ref") or "").strip()
+                    k_run = str(top_k.get("lastRunTime") or "").strip()
+                    total_votes = sum(int(k.get("totalVotes") or 0) for k in user_kernels)
+                    highlights.insert(
+                        1,
+                        f"Official Kaggle API Verified (@{kaggle_username_cand}): {len(user_kernels)} recent notebooks (latest: '{k_title}' on {k_run[:10] or 'recent'}, {total_votes} total votes).",
+                    )
+                    text = (
+                        f"Candidate Name: {display_name} (@{kaggle_username_cand})\n"
+                        f"Platform: Kaggle ({canonical_url})\n"
+                        f"{text}\n\nOfficial Kaggle API Activity (@{kaggle_username_cand}):\n"
+                        + "\n".join(
+                            f"- {k.get('title') or k.get('ref')} (lastRunTime: {str(k.get('lastRunTime') or '')[:10]}, votes: {k.get('totalVotes', 0)})"
+                            for k in user_kernels[:3]
+                        )
+                    ).strip()
+                    info_dict.update(
+                        {
+                            "featured_kernel": str(top_k.get("ref") or ""),
+                            "votes": total_votes,
+                            "last_active_date": k_run,
+                        }
+                    )
+                else:
+                    text = f"Candidate Name: {display_name} (@{kaggle_username_cand})\nPlatform: Kaggle ({canonical_url})\n{text}".strip()
+            else:
+                text = f"Candidate Name: {display_name} (@{kaggle_username_cand})\nPlatform: Kaggle ({canonical_url})\n{text}".strip()
+
+            profile_title = (
+                raw_title
+                if " - " in raw_title and "|" not in raw_title
+                else f"{display_name} - Kaggle Competitor & Data Scientist"
+            )
 
             candidates.append(
                 {
-                    "url": raw_url,
-                    "title": title,
-                    "score": float(getattr(r, "score", 0.5) or 0.5),
+                    "url": canonical_url,
+                    "title": profile_title,
+                    "name": display_name,
+                    "score": float(getattr(r, "score", 0.65) or 0.65),
                     "published_date": getattr(r, "published_date", None),
                     "text": text or None,
                     "highlights": highlights[:5],
@@ -1140,9 +1410,12 @@ class KaggleCandidateSearcher:
                     "location": loc_name,
                     "search_bucket": loc_name,
                     "source": "kaggle",
+                    "info": info_dict,
                     "scraped_at": now.isoformat(),
                 }
             )
+            if len(candidates) >= limit:
+                break
 
         return candidates
 

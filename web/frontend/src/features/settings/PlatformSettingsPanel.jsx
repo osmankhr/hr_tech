@@ -21,6 +21,7 @@ export function PlatformSettingsPanel() {
   const [message, setMessage] = useState("");
 
   const [form, setForm] = useState({
+    KAGGLE_API_TOKEN: "",
     KAGGLE_USERNAME: "",
     KAGGLE_KEY: "",
     GITHUB_TOKEN: "",
@@ -110,6 +111,7 @@ export function PlatformSettingsPanel() {
       setStatus(updated);
       setForm((prev) => ({
         ...prev,
+        KAGGLE_API_TOKEN: "",
         KAGGLE_USERNAME: updated?.keys?.KAGGLE_USERNAME?.masked || "",
         KAGGLE_KEY: "",
         GITHUB_TOKEN: "",
@@ -131,15 +133,20 @@ export function PlatformSettingsPanel() {
     try {
       const keysToClear =
         keyToClear === "KAGGLE_BOTH"
-          ? ["KAGGLE_USERNAME", "KAGGLE_KEY"]
+          ? ["KAGGLE_API_TOKEN", "KAGGLE_USERNAME", "KAGGLE_KEY"]
           : [keyToClear];
       const updated = await campaignApi.updateIntegrationSettings({
         credentials: {},
         clear_keys: keysToClear,
       });
       setStatus(updated);
-      if (keysToClear.includes("KAGGLE_USERNAME")) {
-        setForm((prev) => ({ ...prev, KAGGLE_USERNAME: "", KAGGLE_KEY: "" }));
+      if (keysToClear.includes("KAGGLE_USERNAME") || keysToClear.includes("KAGGLE_API_TOKEN")) {
+        setForm((prev) => ({
+          ...prev,
+          KAGGLE_API_TOKEN: "",
+          KAGGLE_USERNAME: "",
+          KAGGLE_KEY: "",
+        }));
       }
       setMessage(`Cleared ${keysToClear.join(", ")}.`);
     } catch (err) {
@@ -196,8 +203,10 @@ export function PlatformSettingsPanel() {
               </div>
               <p className="mt-1.5 text-xs text-slate-600">
                 {platforms.kaggle?.official_api_configured
-                  ? `Connected as ${keys.KAGGLE_USERNAME?.masked || "user"}`
-                  : "Add Kaggle Username & Key for live kernel/competition activity checks."}
+                  ? keys.KAGGLE_API_TOKEN?.configured
+                    ? `Token: ${keys.KAGGLE_API_TOKEN?.masked}`
+                    : `Connected as ${keys.KAGGLE_USERNAME?.masked || "user"}`
+                  : "Add KAGGLE_API_TOKEN (or Username & Key) for live kernel/competition activity checks."}
               </p>
             </div>
 
@@ -254,8 +263,8 @@ export function PlatformSettingsPanel() {
                   1. Kaggle API Credentials (Official REST API)
                 </h4>
                 <p className="text-xs text-slate-500">
-                  From Kaggle &rarr; Settings &rarr; Account &rarr; API (&ldquo;Create New Token&rdquo;).
-                  You can upload your downloaded <code>kaggle.json</code> or enter the fields below.
+                  Supports Kaggle API v2 Bearer tokens (<code>KAGGLE_API_TOKEN=KGAT_...</code>) or legacy{" "}
+                  <code>kaggle.json</code> (<code>KAGGLE_USERNAME</code> + <code>KAGGLE_KEY</code>).
                 </p>
               </div>
 
@@ -269,7 +278,9 @@ export function PlatformSettingsPanel() {
                     className="hidden"
                   />
                 </label>
-                {(keys.KAGGLE_USERNAME?.configured || keys.KAGGLE_KEY?.configured) && (
+                {(keys.KAGGLE_API_TOKEN?.configured ||
+                  keys.KAGGLE_USERNAME?.configured ||
+                  keys.KAGGLE_KEY?.configured) && (
                   <button
                     type="button"
                     onClick={() => handleClearKey("KAGGLE_BOTH")}
@@ -282,10 +293,49 @@ export function PlatformSettingsPanel() {
               </div>
             </div>
 
+            <div className="mb-4">
+              <label className="block text-sm">
+                <div className="mb-1 flex items-center justify-between">
+                  <span className="font-medium text-slate-700">
+                    Kaggle API Token (<code>KAGGLE_API_TOKEN</code> — Recommended, e.g.{" "}
+                    <code>KGAT_...</code>)
+                  </span>
+                  {keys.KAGGLE_API_TOKEN?.configured && (
+                    <span className="text-xs text-emerald-700">
+                      Current: {keys.KAGGLE_API_TOKEN.masked}
+                    </span>
+                  )}
+                </div>
+                <div className="flex gap-2">
+                  <input
+                    type="password"
+                    value={form.KAGGLE_API_TOKEN}
+                    onChange={(e) => updateField("KAGGLE_API_TOKEN", e.target.value)}
+                    placeholder={
+                      keys.KAGGLE_API_TOKEN?.configured
+                        ? "Leave blank to keep existing token, or enter new KGAT_... token"
+                        : "KGAT_..."
+                    }
+                    className="w-full rounded-lg border border-slate-300 px-3.5 py-2.5 text-sm outline-none focus:border-indigo-600"
+                  />
+                  {keys.KAGGLE_API_TOKEN?.configured && (
+                    <button
+                      type="button"
+                      onClick={() => handleClearKey("KAGGLE_API_TOKEN")}
+                      disabled={saving}
+                      className="rounded-lg border border-slate-300 px-3 py-2 text-xs text-slate-600 hover:bg-slate-100"
+                    >
+                      Clear
+                    </button>
+                  )}
+                </div>
+              </label>
+            </div>
+
             <div className="grid gap-4 md:grid-cols-2">
               <label className="block text-sm">
                 <span className="mb-1 block font-medium text-slate-700">
-                  Kaggle Username (<code>KAGGLE_USERNAME</code>)
+                  Legacy Kaggle Username (<code>KAGGLE_USERNAME</code> — Optional)
                 </span>
                 <input
                   type="text"
@@ -299,7 +349,7 @@ export function PlatformSettingsPanel() {
               <label className="block text-sm">
                 <div className="mb-1 flex items-center justify-between">
                   <span className="font-medium text-slate-700">
-                    Kaggle API Key / Token (<code>KAGGLE_KEY</code>)
+                    Legacy Kaggle Key (<code>KAGGLE_KEY</code> — Optional)
                   </span>
                   {keys.KAGGLE_KEY?.configured && (
                     <span className="text-xs text-emerald-700">
