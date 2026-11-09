@@ -161,6 +161,10 @@ export function PlatformSourceSelector({
           />
         </div>
       </div>
+
+      <div className="mt-3 rounded-lg border border-indigo-200 bg-indigo-50/70 px-3 py-2 text-xs text-indigo-900">
+        <strong>ℹ️ Bilgi:</strong> GitHub ve Hugging Face aramaları token girmeden de (Public API ile) çalışır; ancak yüksek hacimli aramalarda rate-limit&apos;e takılmamak için <strong>Platform &amp; API Settings</strong> ekranından opsiyonel olarak token ekleyebilirsiniz.
+      </div>
     </div>
   );
 }

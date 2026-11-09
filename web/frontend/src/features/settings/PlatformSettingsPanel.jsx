@@ -328,10 +328,14 @@ export function PlatformSettingsPanel() {
               <h4 className="text-sm font-semibold text-slate-900">
                 2. GitHub &amp; Hugging Face Tokens (Optional — Rate Limit Boosters)
               </h4>
-              <p className="text-xs text-slate-500">
-                GitHub and Hugging Face searches work out-of-the-box without tokens. Adding tokens
-                increases API rate limits for large campaigns.
-              </p>
+              <div className="mt-2 rounded-lg border border-indigo-200 bg-indigo-50/80 px-3.5 py-2.5 text-xs text-indigo-900">
+                <p className="font-medium">
+                  ℹ️ Bilgi: GitHub ve Hugging Face aramaları token girmeden de (Public API ile) doğrudan çalışır; ancak yüksek hacimli aramalarda rate-limit&apos;e takılmamak için opsiyonel olarak token ekleyebilirsiniz.
+                </p>
+                <p className="mt-0.5 text-indigo-700">
+                  (Works without a token via Public API; you can optionally add tokens to avoid rate limits in high-volume searches.)
+                </p>
+              </div>
             </div>
 
             <div className="grid gap-4 md:grid-cols-2">
