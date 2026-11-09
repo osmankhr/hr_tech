@@ -60,7 +60,8 @@ app = FastAPI(title="HR Candidate Search API")
 _cors_origins = [
     origin.strip()
     for origin in os.environ.get(
-        "HR_CORS_ORIGINS", "http://localhost:5173"
+        "HR_CORS_ORIGINS",
+        "http://localhost:5173,http://127.0.0.1:5173,http://localhost:8000,http://127.0.0.1:8000",
     ).split(",")
     if origin.strip()
 ]
@@ -754,11 +755,18 @@ def _run_pipeline_in_background(run_id: int, command, cwd: Path):
             (run_id,),
         ).fetchone()
 
+        child_env = os.environ.copy()
+        child_env["PYTHONUTF8"] = "1"
+        child_env["PYTHONIOENCODING"] = "utf-8"
+
         result = subprocess.run(
             command,
             cwd=str(cwd),
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=child_env,
             check=False,
         )
 

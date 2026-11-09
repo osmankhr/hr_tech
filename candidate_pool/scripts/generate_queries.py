@@ -168,10 +168,10 @@ class QueryGenerator:
         jd_path = campaign_dir / "input" / "job_description.md"
         if not jd_path.exists():
             raise FileNotFoundError(f"job_description.md not found: {jd_path}")
-        self.job_description = jd_path.read_text()
+        self.job_description = jd_path.read_text(encoding="utf-8")
 
         criteria_path = campaign_dir / "input" / "filter_criteria.md"
-        self.filter_criteria = criteria_path.read_text() if criteria_path.exists() else "(not provided)"
+        self.filter_criteria = criteria_path.read_text(encoding="utf-8") if criteria_path.exists() else "(not provided)"
 
         self.seed_cvs = _load_seed_cvs(campaign_dir)
 

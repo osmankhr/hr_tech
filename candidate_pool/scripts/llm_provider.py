@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 import subprocess
 import threading
 import time
@@ -432,7 +433,8 @@ def call_model_text(
             logger.exception("Copilot/GitHub Models call failed")
             return None
 
-    cmd = ["claude", "--print", "--model", model, "--tools", "", "--output-format", "json"]
+    claude_bin = shutil.which("claude") or "claude"
+    cmd = [claude_bin, "--print", "--model", model, "--tools", "", "--output-format", "json"]
     if system:
         cmd += ["--system-prompt", system]
     if effort:
@@ -501,7 +503,7 @@ def _call_claude_cli(
     since switching HOME won't fix a missing binary.
     """
     env = dict(os.environ)
-    if home is not None:
+    if home is not None and home.is_dir():
         env["HOME"] = str(home)
         # Long-lived token (claude setup-token) beats the ~30-day browser login.
         token_file = home / "oauth-token"

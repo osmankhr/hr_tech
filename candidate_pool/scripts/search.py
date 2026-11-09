@@ -885,10 +885,10 @@ class ExaSearcher:
             loc_dir = self.campaign_dir / "data" / loc_name
             loc_dir.mkdir(parents=True, exist_ok=True)
 
-            with open(loc_dir / "raw_results.json", "w") as f:
+            with open(loc_dir / "raw_results.json", "w", encoding="utf-8") as f:
                 json.dump(candidates, f, indent=2, ensure_ascii=False)
 
-            with open(loc_dir / "search_metadata.json", "w") as f:
+            with open(loc_dir / "search_metadata.json", "w", encoding="utf-8") as f:
                 json.dump(
                     {
                         "location": loc_name,
@@ -907,7 +907,7 @@ class ExaSearcher:
         gen_queries_path = self.campaign_dir / "data" / "generated_queries.yaml"
         if gen_queries_path.exists():
             try:
-                with open(gen_queries_path) as f:
+                with open(gen_queries_path, encoding="utf-8") as f:
                     saved_queries = yaml.safe_load(f) or {}
                 modified = False
                 for loc, q_list in all_queries_used.items():
@@ -915,7 +915,7 @@ class ExaSearcher:
                         saved_queries[loc] = q_list
                         modified = True
                 if modified:
-                    with open(gen_queries_path, "w") as f:
+                    with open(gen_queries_path, "w", encoding="utf-8") as f:
                         yaml.dump(saved_queries, f, allow_unicode=True, default_flow_style=False)
                     logger.info("Updated generated_queries.yaml with replenishment queries")
             except Exception as e:

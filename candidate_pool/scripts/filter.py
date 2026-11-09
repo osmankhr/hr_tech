@@ -225,7 +225,7 @@ class CandidateFilter:
         criteria_path = campaign_dir / "input" / "filter_criteria.md"
         if not criteria_path.exists():
             raise FileNotFoundError(f"filter_criteria.md not found: {criteria_path}")
-        self.criteria = criteria_path.read_text()
+        self.criteria = criteria_path.read_text(encoding="utf-8")
 
     def _call_model(self, prompt: str) -> dict[str, Any] | None:
         output = call_model_text(

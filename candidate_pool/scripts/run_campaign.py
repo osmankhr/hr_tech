@@ -34,7 +34,7 @@ def _setup_logging(log_dir: Path) -> None:
         format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
         handlers=[
             logging.StreamHandler(sys.stdout),
-            logging.FileHandler(log_dir / f"run_{stamp}.log"),
+            logging.FileHandler(log_dir / f"run_{stamp}.log", encoding="utf-8"),
         ],
     )
 
@@ -43,7 +43,7 @@ def _load_config(campaign_dir: Path) -> dict:
     config_path = campaign_dir / "campaign.yaml"
     if not config_path.exists():
         raise FileNotFoundError(f"campaign.yaml not found in {campaign_dir}")
-    with open(config_path) as f:
+    with open(config_path, encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 
