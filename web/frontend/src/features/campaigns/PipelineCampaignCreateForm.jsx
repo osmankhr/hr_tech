@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
+import { PlatformSourceSelector } from "./PlatformSourceSelector";
 
 export function PipelineCampaignCreateForm({
   form,
@@ -10,6 +11,7 @@ export function PipelineCampaignCreateForm({
   onRemoveLocation,
   onSave,
   onClose,
+  onOpenSettings,
   error,
   saving,
   templates = [],
@@ -163,6 +165,14 @@ export function PipelineCampaignCreateForm({
           ))}
         </div>
       </div>
+
+      <PlatformSourceSelector
+        platforms={form.platforms || []}
+        activityDays={form.activityDays ?? 180}
+        onPlatformsChange={(nextPlatforms) => onChange("platforms", nextPlatforms)}
+        onActivityDaysChange={(nextDays) => onChange("activityDays", nextDays)}
+        onOpenSettings={onOpenSettings}
+      />
 
       <div className="mt-4 grid gap-4 xl:grid-cols-2">
         <label className="text-sm">

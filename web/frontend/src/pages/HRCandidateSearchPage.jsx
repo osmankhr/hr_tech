@@ -20,6 +20,7 @@ import { PipelineRunStatus } from "../features/campaigns/PipelineRunStatus";
 import { CandidateDetailModal } from "../features/candidates/CandidateDetailModal";
 import { CandidateEditModal } from "../features/candidates/CandidateEditModal";
 import { CandidatePanel } from "../features/candidates/CandidatePanel";
+import { PlatformSettingsPanel } from "../features/settings/PlatformSettingsPanel";
 import { useCampaignForm } from "../hooks/useCampaignForm";
 import { useHrData } from "../hooks/useHrData";
 import {
@@ -108,6 +109,8 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
     name: "",
     description: "",
     locations: buildInitialLocations(""),
+    platforms: ["github", "huggingface", "kaggle"],
+    activityDays: 180,
     jobDescription: DEFAULT_JOB_DESCRIPTION,
     filterCriteria: DEFAULT_FILTER_CRITERIA,
   });
@@ -603,6 +606,8 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
       name: "",
       description: "",
       locations: buildInitialLocations(""),
+      platforms: ["github", "huggingface", "kaggle"],
+      activityDays: 180,
       jobDescription: DEFAULT_JOB_DESCRIPTION,
       filterCriteria: DEFAULT_FILTER_CRITERIA,
     });
@@ -621,6 +626,11 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
       description: template.pipelineDescription || "",
       locations:
         template.locations.length > 0 ? template.locations : buildInitialLocations(""),
+      platforms:
+        Array.isArray(template.platforms) && template.platforms.length > 0
+          ? template.platforms
+          : ["github", "huggingface", "kaggle"],
+      activityDays: Number(template.activityDays || 180),
       jobDescription: template.jobDescription || DEFAULT_JOB_DESCRIPTION,
       filterCriteria: template.filterCriteria || DEFAULT_FILTER_CRITERIA,
     });
@@ -707,6 +717,8 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
         pipelineName: createForm.name.trim(),
         pipelineDescription: createForm.description.trim(),
         locations: cleanedLocations,
+        platforms: Array.isArray(createForm.platforms) ? createForm.platforms : [],
+        activityDays: Number(createForm.activityDays || 180),
         jobDescription: createForm.jobDescription,
         filterCriteria: createForm.filterCriteria,
       });
@@ -716,6 +728,8 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
           templateName: createForm.name.trim(),
           pipelineDescription: createForm.description.trim(),
           locations: cleanedLocations,
+          platforms: Array.isArray(createForm.platforms) ? createForm.platforms : [],
+          activityDays: Number(createForm.activityDays || 180),
           jobDescription: createForm.jobDescription,
           filterCriteria: createForm.filterCriteria,
           sourceCampaignId: campaignId,
@@ -1031,6 +1045,7 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
               ["active", "Active"],
               ["past", "Past"],
               ["database", "Candidates"],
+              ["settings", "Settings"],
             ].map(([id, label]) => (
               <button
                 key={id}
@@ -1066,6 +1081,10 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
               onRemoveLocation={removeCreateLocation}
               onSave={createCampaign}
               onClose={() => setShowCreate(false)}
+              onOpenSettings={() => {
+                setShowCreate(false);
+                setView("settings");
+              }}
               error={createError}
               saving={createBusy}
               templates={campaignTemplates}
@@ -1413,6 +1432,8 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
               />
             </section>
           )}
+
+          {view === "settings" && <PlatformSettingsPanel />}
         </main>
       </div>
 

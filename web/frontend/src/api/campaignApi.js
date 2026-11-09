@@ -29,6 +29,8 @@ export const campaignApi = {
     formData.append("locations_json", JSON.stringify(payload.locations || []));
     formData.append("job_description", payload.jobDescription || "");
     formData.append("filter_criteria", payload.filterCriteria || "");
+    formData.append("platforms_json", JSON.stringify(payload.platforms || []));
+    formData.append("activity_days", String(payload.activityDays ?? 180));
 
     return httpClient.post(`/campaigns/${id}/pipeline/setup`, formData);
   },
@@ -50,6 +52,8 @@ export const campaignApi = {
     formData.append("locations_json", JSON.stringify(payload.locations || []));
     formData.append("job_description", payload.jobDescription || "");
     formData.append("filter_criteria", payload.filterCriteria || "");
+    formData.append("platforms_json", JSON.stringify(payload.platforms || []));
+    formData.append("activity_days", String(payload.activityDays ?? 180));
     if (payload.sourceCampaignId !== null && payload.sourceCampaignId !== undefined) {
       formData.append("source_campaign_id", String(payload.sourceCampaignId));
     }
@@ -83,7 +87,17 @@ export const campaignApi = {
     formData.append("locations_json", JSON.stringify(payload.locations || []));
     formData.append("job_description", payload.jobDescription || "");
     formData.append("filter_criteria", payload.filterCriteria || "");
+    formData.append("platforms_json", JSON.stringify(payload.platforms || []));
+    formData.append("activity_days", String(payload.activityDays ?? 180));
     return httpClient.put(`/campaigns/${id}/pipeline/config`, formData);
+  },
+
+  getIntegrationSettings() {
+    return httpClient.get("/settings/integrations");
+  },
+
+  updateIntegrationSettings(payload) {
+    return httpClient.put("/settings/integrations", payload);
   },
 
   getScoringExplainer(id) {

@@ -33,6 +33,20 @@ BACKEND_DIR = Path(__file__).resolve().parent
 DB_PATH = BACKEND_DIR / "hr_candidate_search_demo.db"
 CANDIDATE_POOL_ROOT = BACKEND_DIR.parent.parent / "candidate_pool"
 CANDIDATE_POOL_CAMPAIGNS_DIR = CANDIDATE_POOL_ROOT / "campaigns"
+CANDIDATE_POOL_ENV_PATH = CANDIDATE_POOL_ROOT / ".env"
+
+# Supported external community platforms that can be toggled per campaign alongside Exa search.
+ALLOWED_COMMUNITY_PLATFORMS = ("github", "huggingface", "kaggle")
+DEFAULT_ACTIVITY_DAYS = 180
+
+# Explicit allowlist of environment variable keys manageable via /api/settings/integrations.
+ALLOWED_INTEGRATION_ENV_KEYS = (
+    "KAGGLE_USERNAME",
+    "KAGGLE_KEY",
+    "GITHUB_TOKEN",
+    "HF_TOKEN",
+    "EXA_API_KEY",
+)
 UPLOAD_DIR = BACKEND_DIR / "uploaded_cvs"
 FRONTEND_DIST = BACKEND_DIR.parent / "frontend" / "dist"
 MAX_WORKERS_CAP = 20
@@ -255,12 +269,14 @@ def ensure_pipeline_tables():
         WHERE campaign_id NOT IN (SELECT campaign_id FROM pipeline_config_versions)
     """)
 
-    # Backward-compatible columns for run summary metrics.
+    # Backward-compatible columns for run summary metrics and template platform configs.
     for alter_sql in [
         "ALTER TABLE pipeline_runs ADD COLUMN accepted_candidates INTEGER",
         "ALTER TABLE pipeline_runs ADD COLUMN ranked_candidates INTEGER",
         "ALTER TABLE candidates ADD COLUMN english_confidence TEXT",
         "ALTER TABLE candidates ADD COLUMN english_confidence_reason TEXT",
+        "ALTER TABLE pipeline_campaign_templates ADD COLUMN platforms_json TEXT",
+        "ALTER TABLE pipeline_campaign_templates ADD COLUMN activity_days INTEGER",
     ]:
         try:
             conn.execute(alter_sql)
@@ -348,7 +364,73 @@ def _build_location_filter_clause(locations):
     return "\n".join(lines)
 
 
-def _build_campaign_yaml(name: str, description: str, locations, max_candidates: Optional[int] = None):
+def _parse_platforms_json(platforms_json: Optional[str]) -> list[str]:
+    """Validate and normalize a JSON-encoded list of community platform identifiers.
+
+    Security & data integrity:
+    - Rejects malformed JSON or non-array payloads with HTTP 400.
+    - Enforces a strict allowlist (github, huggingface, kaggle) so arbitrary strings
+      cannot be injected into campaign.yaml.
+    - Deduplicates while preserving canonical order.
+    """
+    if platforms_json is None or not str(platforms_json).strip():
+        return []
+
+    try:
+        parsed = json.loads(platforms_json)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="platforms_json must be valid JSON")
+
+    if not isinstance(parsed, list):
+        raise HTTPException(status_code=400, detail="platforms_json must be a JSON array")
+
+    cleaned: list[str] = []
+    for item in parsed:
+        normalized = str(item or "").strip().lower()
+        if not normalized:
+            continue
+        if normalized not in ALLOWED_COMMUNITY_PLATFORMS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported platform '{normalized}'. Allowed: {', '.join(ALLOWED_COMMUNITY_PLATFORMS)}",
+            )
+        if normalized not in cleaned:
+            cleaned.append(normalized)
+    return cleaned
+
+
+def _validate_activity_days(activity_days: Optional[int]) -> int:
+    """Validate the recency window (in days) used for active candidate verification."""
+    if activity_days is None:
+        return DEFAULT_ACTIVITY_DAYS
+    try:
+        val = int(activity_days)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="activity_days must be an integer")
+    if val < 1 or val > 3650:
+        raise HTTPException(status_code=400, detail="activity_days must be between 1 and 3650")
+    return val
+
+
+def _build_campaign_yaml(
+    name: str,
+    description: str,
+    locations,
+    max_candidates: Optional[int] = None,
+    platforms: Optional[list[str]] = None,
+    activity_days: int = DEFAULT_ACTIVITY_DAYS,
+):
+    """Build the campaign.yaml file content for a pipeline campaign.
+
+    Includes `search.provider: exa` as the primary search engine and, when configured,
+    `search.platforms` (e.g. ["github", "huggingface", "kaggle"]) and `search.activity_days`
+    so community platform searchers run alongside Exa during the search step.
+    """
+    normalized_platforms = [
+        p for p in (platforms or []) if p in ALLOWED_COMMUNITY_PLATFORMS
+    ]
+    validated_days = _validate_activity_days(activity_days)
+
     lines = [
         f"name: {json.dumps(name, ensure_ascii=False)}",
         f"description: {json.dumps(description, ensure_ascii=False)}",
@@ -368,6 +450,8 @@ def _build_campaign_yaml(name: str, description: str, locations, max_candidates:
         "  num_queries_per_location: 6",
         "  num_results_per_query: 30",
         "  provider: exa",
+        f"  platforms: {json.dumps(normalized_platforms)}",
+        f"  activity_days: {validated_days}",
         "  category: people",
         "  contents:",
         "    text: true",
@@ -443,12 +527,28 @@ def _read_pipeline_config_files(pipeline_dir: Path) -> dict:
     filter_criteria_path = pipeline_dir / "input" / "filter_criteria.md"
 
     name, description, locations = "", "", []
+    platforms: list[str] = []
+    activity_days: int = DEFAULT_ACTIVITY_DAYS
     if campaign_yaml_path.exists():
         try:
             parsed = yaml.safe_load(campaign_yaml_path.read_text(encoding="utf-8")) or {}
             name = parsed.get("name") or ""
             description = parsed.get("description") or ""
             locations = parsed.get("locations") or []
+            search_cfg = parsed.get("search") or {}
+            raw_platforms = search_cfg.get("platforms")
+            if isinstance(raw_platforms, list):
+                platforms = [
+                    str(p).strip().lower()
+                    for p in raw_platforms
+                    if str(p).strip().lower() in ALLOWED_COMMUNITY_PLATFORMS
+                ]
+            raw_days = search_cfg.get("activity_days")
+            if raw_days is not None:
+                try:
+                    activity_days = max(1, min(3650, int(raw_days)))
+                except (TypeError, ValueError):
+                    activity_days = DEFAULT_ACTIVITY_DAYS
         except Exception:
             logger.exception("Failed to read campaign.yaml at %s", campaign_yaml_path)
 
@@ -467,6 +567,8 @@ def _read_pipeline_config_files(pipeline_dir: Path) -> dict:
         "pipeline_name": name,
         "pipeline_description": description,
         "locations": locations,
+        "platforms": platforms,
+        "activity_days": activity_days,
         "job_description": job_description,
         "filter_criteria": filter_criteria,
     }
@@ -765,6 +867,8 @@ def setup_pipeline_campaign(
     locations_json: str = Form(...),
     job_description: str = Form(...),
     filter_criteria: str = Form(...),
+    platforms_json: Optional[str] = Form(default=None),
+    activity_days: Optional[int] = Form(default=DEFAULT_ACTIVITY_DAYS),
     current_user=Depends(get_current_user),
 ):
     conn = get_connection()
@@ -781,6 +885,13 @@ def setup_pipeline_campaign(
     ).fetchone()
     target_profiles = (campaign_extra["target_profiles"] if campaign_extra else None) or 40
     sample_cv_filename = campaign_extra["sample_cv_filename"] if campaign_extra else None
+
+    try:
+        cleaned_platforms = _parse_platforms_json(platforms_json)
+        validated_activity_days = _validate_activity_days(activity_days)
+    except HTTPException:
+        conn.close()
+        raise
 
     try:
         parsed_locations = json.loads(locations_json)
@@ -824,7 +935,14 @@ def setup_pipeline_campaign(
     filter_criteria_path = input_dir / "filter_criteria.md"
 
     campaign_yaml_path.write_text(
-        _build_campaign_yaml(pipeline_name, pipeline_description, cleaned_locations, max_candidates=None),
+        _build_campaign_yaml(
+            pipeline_name,
+            pipeline_description,
+            cleaned_locations,
+            max_candidates=None,
+            platforms=cleaned_platforms,
+            activity_days=validated_activity_days,
+        ),
         encoding="utf-8",
     )
     job_description_path.write_text(job_description, encoding="utf-8")
@@ -951,6 +1069,8 @@ def update_pipeline_config(
     locations_json: str = Form(...),
     job_description: str = Form(...),
     filter_criteria: str = Form(...),
+    platforms_json: Optional[str] = Form(default=None),
+    activity_days: Optional[int] = Form(default=DEFAULT_ACTIVITY_DAYS),
     current_user=Depends(get_current_user),
 ):
     """Edit a campaign's pipeline config.
@@ -967,6 +1087,13 @@ def update_pipeline_config(
     if not campaign:
         conn.close()
         raise HTTPException(status_code=404, detail="Campaign not found")
+
+    try:
+        cleaned_platforms = _parse_platforms_json(platforms_json)
+        validated_activity_days = _validate_activity_days(activity_days)
+    except HTTPException:
+        conn.close()
+        raise
 
     current_row = conn.execute("""
         SELECT pipeline_dir
@@ -1040,7 +1167,14 @@ def update_pipeline_config(
     filter_criteria_path = input_dir / "filter_criteria.md"
 
     campaign_yaml_path.write_text(
-        _build_campaign_yaml(pipeline_name, pipeline_description, cleaned_locations, max_candidates=None),
+        _build_campaign_yaml(
+            pipeline_name,
+            pipeline_description,
+            cleaned_locations,
+            max_candidates=None,
+            platforms=cleaned_platforms,
+            activity_days=validated_activity_days,
+        ),
         encoding="utf-8",
     )
     job_description_path.write_text(job_description, encoding="utf-8")
@@ -1120,10 +1254,12 @@ def create_campaign_template(
     locations_json: str = Form(...),
     job_description: str = Form(...),
     filter_criteria: str = Form(...),
+    platforms_json: Optional[str] = Form(default=None),
+    activity_days: Optional[int] = Form(default=DEFAULT_ACTIVITY_DAYS),
     source_campaign_id: Optional[int] = Form(None),
     current_user=Depends(get_current_user),
 ):
-    """Save a reusable pipeline campaign config (name/locations/JD/criteria).
+    """Save a reusable pipeline campaign config (name/locations/JD/criteria/platforms).
 
     Lets recruiters reuse a previous campaign's setup instead of retyping it.
     Optionally bound to the campaign it was actually used to create.
@@ -1132,6 +1268,8 @@ def create_campaign_template(
         raise HTTPException(status_code=400, detail="Config name is required")
 
     cleaned_locations = _parse_template_locations(locations_json)
+    cleaned_platforms = _parse_platforms_json(platforms_json)
+    validated_activity_days = _validate_activity_days(activity_days)
 
     conn = get_connection()
 
@@ -1148,18 +1286,22 @@ def create_campaign_template(
             locations_json,
             job_description,
             filter_criteria,
+            platforms_json,
+            activity_days,
             source_campaign_id,
             created_by_user_id,
             created_at,
             updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         template_name.strip(),
         pipeline_description.strip(),
         json.dumps(cleaned_locations),
         job_description,
         filter_criteria,
+        json.dumps(cleaned_platforms),
+        validated_activity_days,
         source_campaign_id,
         current_user["id"],
         now,
@@ -1208,6 +1350,15 @@ def list_campaign_templates(current_user=Depends(get_current_user)):
             item["locations"] = json.loads(item.pop("locations_json") or "[]")
         except json.JSONDecodeError:
             item["locations"] = []
+        raw_platforms_json = item.pop("platforms_json", None)
+        try:
+            parsed_platforms = json.loads(raw_platforms_json or "[]")
+            item["platforms"] = [
+                p for p in parsed_platforms if p in ALLOWED_COMMUNITY_PLATFORMS
+            ] if isinstance(parsed_platforms, list) else []
+        except json.JSONDecodeError:
+            item["platforms"] = []
+        item["activity_days"] = int(item.get("activity_days") or DEFAULT_ACTIVITY_DAYS)
         results.append(item)
 
     return results
@@ -1382,9 +1533,12 @@ def run_pipeline(
         raise HTTPException(status_code=404, detail="Pipeline directory not found")
 
     preferred_venv_python = CANDIDATE_POOL_ROOT / ".venv" / "bin" / "python"
+    preferred_venv_windows = CANDIDATE_POOL_ROOT / ".venv" / "Scripts" / "python.exe"
     python_bin = os.getenv("CANDIDATE_POOL_PYTHON")
     if not python_bin:
-        if preferred_venv_python.exists():
+        if preferred_venv_windows.exists():
+            python_bin = str(preferred_venv_windows)
+        elif preferred_venv_python.exists():
             python_bin = str(preferred_venv_python)
         else:
             python_bin = "python3"
@@ -3223,6 +3377,208 @@ def add_candidate_comment(
     conn.close()
     
     return {"status": "success"}
+
+
+# ---------------------------------------------------------------------------
+# Platform & API Integration Settings (Kaggle, GitHub, Hugging Face, Exa)
+# ---------------------------------------------------------------------------
+
+def _read_dotenv_dict(env_path: Path) -> dict[str, str]:
+    """Parse key=value pairs from a .env file without executing or expanding shell expressions."""
+    values: dict[str, str] = {}
+    if not env_path.exists():
+        return values
+
+    try:
+        for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, val = line.partition("=")
+            key = key.strip()
+            val = val.strip()
+            if len(val) >= 2 and val[0] == val[-1] and val[0] in ('"', "'"):
+                val = val[1:-1]
+            if key:
+                values[key] = val
+    except Exception:
+        logger.exception("Failed to read .env file at %s", env_path)
+    return values
+
+
+def _mask_secret_value(key: str, raw_value: str) -> str:
+    """Return a safe masked representation of a secret so raw API keys are never exposed via GET."""
+    cleaned = (raw_value or "").strip()
+    if not cleaned:
+        return ""
+    # KAGGLE_USERNAME is an account handle (non-secret identifier), safe to display to the user.
+    if key == "KAGGLE_USERNAME":
+        return cleaned
+    if len(cleaned) <= 6:
+        return "••••••••"
+    return f"••••••••{cleaned[-4:]}"
+
+
+def _validate_env_secret_value(key: str, value: str) -> str:
+    """Validate an environment variable value to prevent newline/.env injection."""
+    if not isinstance(value, str):
+        raise HTTPException(status_code=400, detail=f"Invalid value type for {key}")
+    if any(ch in value for ch in ("\n", "\r", "\x00")):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid control characters in {key}",
+        )
+    trimmed = value.strip()
+    if len(trimmed) > 512:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{key} exceeds maximum allowed length (512 characters)",
+        )
+    return trimmed
+
+
+def _write_dotenv_updates(
+    env_path: Path,
+    updates: dict[str, str],
+    clear_keys: set[str],
+) -> None:
+    """Safely update or remove specific allowlisted keys in a .env file while preserving other lines."""
+    env_path.parent.mkdir(parents=True, exist_ok=True)
+    existing_lines = (
+        env_path.read_text(encoding="utf-8").splitlines()
+        if env_path.exists()
+        else []
+    )
+
+    handled_keys: set[str] = set()
+    new_lines: list[str] = []
+
+    for raw_line in existing_lines:
+        stripped = raw_line.strip()
+        if stripped and not stripped.startswith("#") and "=" in stripped:
+            key, _, _ = stripped.partition("=")
+            key = key.strip()
+            if key in ALLOWED_INTEGRATION_ENV_KEYS:
+                if key in clear_keys:
+                    handled_keys.add(key)
+                    continue
+                if key in updates:
+                    new_lines.append(f"{key}={updates[key]}")
+                    handled_keys.add(key)
+                    continue
+        new_lines.append(raw_line)
+
+    for key in ALLOWED_INTEGRATION_ENV_KEYS:
+        if key in updates and key not in handled_keys and key not in clear_keys:
+            new_lines.append(f"{key}={updates[key]}")
+
+    content = "\n".join(new_lines)
+    if content and not content.endswith("\n"):
+        content += "\n"
+    env_path.write_text(content, encoding="utf-8")
+
+
+def _build_integrations_status_response() -> dict:
+    """Build masked status payload for all supported platform integrations."""
+    dotenv_vals = _read_dotenv_dict(CANDIDATE_POOL_ENV_PATH)
+    keys_status = {}
+    for key in ALLOWED_INTEGRATION_ENV_KEYS:
+        raw_val = dotenv_vals.get(key) or os.environ.get(key) or ""
+        raw_val = raw_val.strip()
+        keys_status[key] = {
+            "configured": bool(raw_val),
+            "masked": _mask_secret_value(key, raw_val),
+        }
+
+    return {
+        "keys": keys_status,
+        "platforms": {
+            "exa": {
+                "ready": keys_status["EXA_API_KEY"]["configured"],
+                "mode": "primary_search",
+            },
+            "kaggle": {
+                "ready": (
+                    (keys_status["KAGGLE_USERNAME"]["configured"] and keys_status["KAGGLE_KEY"]["configured"])
+                    or keys_status["EXA_API_KEY"]["configured"]
+                ),
+                "official_api_configured": (
+                    keys_status["KAGGLE_USERNAME"]["configured"]
+                    and keys_status["KAGGLE_KEY"]["configured"]
+                ),
+                "exa_fallback_configured": keys_status["EXA_API_KEY"]["configured"],
+            },
+            "github": {
+                "ready": True,
+                "token_configured": keys_status["GITHUB_TOKEN"]["configured"],
+            },
+            "huggingface": {
+                "ready": True,
+                "token_configured": keys_status["HF_TOKEN"]["configured"],
+            },
+        },
+    }
+
+
+@app.get("/api/settings/integrations")
+def get_integration_settings(current_user=Depends(get_current_user)):
+    """Return masked configuration status for Kaggle, GitHub, Hugging Face, and Exa API keys."""
+    return _build_integrations_status_response()
+
+
+@app.put("/api/settings/integrations")
+def update_integration_settings(
+    payload: dict = Body(...),
+    current_user=Depends(get_current_user),
+):
+    """Update or clear platform API credentials in candidate_pool/.env and process environment.
+
+    Security notes:
+    - Only keys in ALLOWED_INTEGRATION_ENV_KEYS are accepted.
+    - Empty strings in `credentials` are ignored (preserving existing secrets) unless the key
+      is explicitly listed in `clear_keys`.
+    - Control characters (newlines, null bytes) are rejected to prevent .env injection.
+    - Raw secret values are never returned in the response.
+    """
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Payload must be a JSON object")
+
+    raw_credentials = payload.get("credentials") or {}
+    raw_clear_keys = payload.get("clear_keys") or []
+
+    if not isinstance(raw_credentials, dict):
+        raise HTTPException(status_code=400, detail="credentials must be an object")
+    if not isinstance(raw_clear_keys, list):
+        raise HTTPException(status_code=400, detail="clear_keys must be a list")
+
+    updates: dict[str, str] = {}
+    for key, val in raw_credentials.items():
+        if key not in ALLOWED_INTEGRATION_ENV_KEYS:
+            raise HTTPException(status_code=400, detail=f"Unsupported credential key: {key}")
+        if val is None:
+            continue
+        cleaned = _validate_env_secret_value(key, str(val))
+        if cleaned:
+            updates[key] = cleaned
+
+    clear_keys: set[str] = set()
+    for key in raw_clear_keys:
+        if key not in ALLOWED_INTEGRATION_ENV_KEYS:
+            raise HTTPException(status_code=400, detail=f"Unsupported credential key in clear_keys: {key}")
+        clear_keys.add(key)
+
+    _write_dotenv_updates(CANDIDATE_POOL_ENV_PATH, updates, clear_keys)
+
+    # Synchronize in-memory environment so subprocesses spawned by run_pipeline see changes immediately.
+    for key in clear_keys:
+        os.environ.pop(key, None)
+    for key, val in updates.items():
+        os.environ[key] = val
+
+    return {
+        "success": True,
+        **_build_integrations_status_response(),
+    }
 
 
 

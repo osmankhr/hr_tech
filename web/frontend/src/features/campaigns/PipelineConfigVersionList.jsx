@@ -39,6 +39,12 @@ export function PipelineConfigVersionList({ versions = [], loading }) {
               <Badge tone={version.hasResults ? "green" : "gray"}>
                 {version.hasResults ? "Has results" : "Not run yet"}
               </Badge>
+              <Badge tone="brand">
+                Sources: Exa
+                {Array.isArray(version.platforms) && version.platforms.length > 0
+                  ? ` + ${version.platforms.join(", ")} (${version.activityDays || 180}d)`
+                  : " only"}
+              </Badge>
               {typeof version.acceptedCandidates === "number" && (
                 <Badge tone="amber">{version.acceptedCandidates} accepted</Badge>
               )}

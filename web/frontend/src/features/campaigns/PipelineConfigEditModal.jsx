@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Modal } from "../../components/ui/Modal";
 import { Button } from "../../components/ui/Button";
+import { PlatformSourceSelector } from "./PlatformSourceSelector";
 
 export function PipelineConfigEditModal({
   initialConfig,
@@ -25,6 +26,8 @@ export function PipelineConfigEditModal({
         initialConfig.locations && initialConfig.locations.length > 0
           ? initialConfig.locations
           : [{ name: "", hint: "" }],
+      platforms: Array.isArray(initialConfig.platforms) ? initialConfig.platforms : [],
+      activityDays: Number(initialConfig.activityDays || 180),
       jobDescription: initialConfig.jobDescription || "",
       filterCriteria: initialConfig.filterCriteria || "",
     });
@@ -70,6 +73,8 @@ export function PipelineConfigEditModal({
       pipelineName: form.pipelineName.trim(),
       pipelineDescription: form.pipelineDescription.trim(),
       locations: cleanedLocations,
+      platforms: Array.isArray(form.platforms) ? form.platforms : [],
+      activityDays: Number(form.activityDays || 180),
       jobDescription: form.jobDescription,
       filterCriteria: form.filterCriteria,
     });
@@ -154,6 +159,13 @@ export function PipelineConfigEditModal({
           ))}
         </div>
       </div>
+
+      <PlatformSourceSelector
+        platforms={form.platforms || []}
+        activityDays={form.activityDays ?? 180}
+        onPlatformsChange={(nextPlatforms) => updateField("platforms", nextPlatforms)}
+        onActivityDaysChange={(nextDays) => updateField("activityDays", nextDays)}
+      />
 
       <div className="mt-4 grid gap-4 xl:grid-cols-2">
         <label className="text-sm">

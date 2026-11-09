@@ -35,6 +35,9 @@ export function Sidebar({ view, setView }) {
         {navButton("active", "Active Campaigns", Icons.Clock)}
         {navButton("past", "Past Campaigns", Icons.Archive)}
         {navButton("database", "All Candidates Database", Icons.Database)}
+        <div className="my-2 border-t border-slate-200 pt-2">
+          {navButton("settings", "Platform & API Settings", Icons.Settings)}
+        </div>
       </nav>
     </aside>
   );

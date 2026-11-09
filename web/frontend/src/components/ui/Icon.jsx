@@ -9,6 +9,7 @@ import {
   Plus,
   RefreshCw,
   Search,
+  Settings,
   Users,
 } from "lucide-react";
 
@@ -24,4 +25,5 @@ export const Icons = {
   Database,
   Chart: BarChart3,
   Filter: FilterIcon,
+  Settings,
 };
