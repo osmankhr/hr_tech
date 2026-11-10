@@ -414,7 +414,18 @@ def _build_mandatory_criteria_clause(
             "",
         ])
 
-    # 4. Evidence Verification & Social Feed Stripping
+    # 4. Technical Community Platforms Rule (GitHub, Hugging Face, Kaggle)
+    lines.extend([
+        "## Technical Community Platforms Rule (GitHub, Hugging Face, Kaggle)",
+        "",
+        "The recruitment team explicitly searches GitHub, Hugging Face, and Kaggle to discover active technical builders, open-source model authors, and competitors. Candidates from these platforms typically present code repositories, model weights, datasets, or competition notebooks rather than formal corporate CVs.",
+        "- If a candidate is from GitHub, Hugging Face, or Kaggle and demonstrates substantive hands-on ML/Data Science technical work (e.g. models, datasets, active repositories, competition solutions) and has a connection to Turkey (Turkish name, Turkish NLP/models/datasets, or Turkey bio) with no contradictory foreign location, you MUST evaluate them as ACCEPT.",
+        "- Do NOT reject them or leave them pending solely because their platform page lacks corporate employer history, job titles, or explicit years of experience. The recruitment team will manually evaluate their background and reach out to them.",
+        "- Only REJECT a community candidate if they are currently employed at ING, or are clearly based in a foreign country (e.g. USA, Germany, Netherlands), or are an active student/intern with no substantive technical work.",
+        "",
+    ])
+
+    # 5. Evidence Verification & Social Feed Stripping
     lines.extend([
         "## Evidence Verification Rule",
         "",

@@ -146,7 +146,10 @@ If the Filtering Criteria include a location requirement, treat it as a hard req
 recommend ACCEPT when the candidate's real location (as you just determined it) clearly satisfies \
 it. If the real location clearly does not satisfy it, recommend REJECT and say so in main_concern. \
 If the location cannot be determined from the profile text, recommend PENDING (not ACCEPT) so a \
-human can verify.
+human can verify, unless the candidate is from a technical community platform (GitHub, Hugging Face, \
+Kaggle) with local/language affinity and no foreign location, as specified in the criteria. \
+For candidates from GitHub, Hugging Face, or Kaggle, if they show relevant technical artifacts and \
+are not definitively abroad, recommend ACCEPT for manual recruiter review rather than rejecting for lack of a CV.
 
 Standing hard rule, independent of the Filtering Criteria above: this search is run by ING \
 recruiters to find candidates from OUTSIDE the company, so a candidate whose real current \
