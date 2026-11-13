@@ -160,6 +160,8 @@ class ContactedCandidatesStore:
         self.file_path: Path | None = Path(file_path).resolve() if file_path else None
         self.contacted_names: set[str] = set()
         self.contacted_urls: set[str] = set()
+        self.contacted_records_by_name: dict[str, dict[str, Any]] = {}
+        self.contacted_records_by_url: dict[str, dict[str, Any]] = {}
         if self.file_path:
             self.load(self.file_path)
 
@@ -215,12 +217,6 @@ class ContactedCandidatesStore:
                 name_col = col_map[alias]
                 break
 
-        if name_col is not None:
-            for val in df[name_col].dropna():
-                cleaned = clean_candidate_name(str(val))
-                if cleaned and len(cleaned) >= 2:
-                    self.contacted_names.add(cleaned)
-
         # Look for url column
         url_col = None
         for alias in URL_COLUMN_ALIASES:
@@ -228,22 +224,42 @@ class ContactedCandidatesStore:
                 url_col = col_map[alias]
                 break
 
-        if url_col is not None:
-            for val in df[url_col].dropna():
-                norm = normalize_url(str(val))
+        for _, row in df.iterrows():
+            row_dict: dict[str, Any] = {}
+            for col_name, val in row.items():
+                if pd.notna(val):
+                    val_str = str(val).strip()
+                    if val_str:
+                        row_dict[str(col_name)] = val_str
+
+            if name_col is not None and name_col in row and pd.notna(row[name_col]):
+                cleaned = clean_candidate_name(str(row[name_col]))
+                if cleaned and len(cleaned) >= 2:
+                    self.contacted_names.add(cleaned)
+                    if cleaned not in self.contacted_records_by_name:
+                        self.contacted_records_by_name[cleaned] = row_dict
+
+            if url_col is not None and url_col in row and pd.notna(row[url_col]):
+                norm = normalize_url(str(row[url_col]))
                 if norm:
                     self.contacted_urls.add(norm)
+                    if norm not in self.contacted_records_by_url:
+                        self.contacted_records_by_url[norm] = row_dict
 
-    def is_contacted(self, candidate: dict[str, Any]) -> bool:
-        """Check if candidate matches any contacted candidate by URL or name."""
+    def get_contacted_match(self, candidate: dict[str, Any]) -> dict[str, Any] | None:
+        """Return match details and recruiter metadata if candidate matches contacted store."""
         if self.is_empty():
-            return False
+            return None
 
         # 1. Direct URL match
         cand_url = candidate.get("url") or ""
         cand_url_norm = normalize_url(cand_url)
         if cand_url_norm and cand_url_norm in self.contacted_urls:
-            return True
+            return {
+                "match_type": "url",
+                "matched_key": cand_url_norm,
+                "recruiter_record": dict(self.contacted_records_by_url.get(cand_url_norm, {})),
+            }
 
         title = candidate.get("title") or ""
         title_name = extract_name_from_title(title)
@@ -254,38 +270,52 @@ class ContactedCandidatesStore:
         direct_name = clean_candidate_name(candidate.get("name") or "")
 
         for contacted in self.contacted_names:
-            # Direct match with explicit candidate name
+            matched = False
+            match_type = ""
             if direct_name and contacted == direct_name:
-                return True
+                matched = True
+                match_type = "direct_name"
+            elif title_name and contacted == title_name:
+                matched = True
+                match_type = "title_name"
+            else:
+                words = contacted.split()
+                # If contacted name has 2+ words (first + last name), check phrase in title or url slug
+                if len(words) >= 2:
+                    # Word-boundary phrase search in full title
+                    if re.search(r"\b" + re.escape(contacted) + r"\b", norm_title):
+                        matched = True
+                        match_type = "title_phrase"
+                    else:
+                        # LinkedIn URL slug match (e.g. in/yigit-can-ozkaya or in/yigitcanozkaya)
+                        slug_dash = "-".join(words)
+                        slug_nodash = "".join(words)
+                        slug_pattern = rf"/(in|pub)/({re.escape(slug_dash)}|{re.escape(slug_nodash)})(-[0-9a-z]+)?(/|\?|$)"
+                        if re.search(slug_pattern, cand_url_lower):
+                            matched = True
+                            match_type = "linkedin_slug"
+                        else:
+                            # Community platform handle match (github.com/<slug>, huggingface.co/<slug>, kaggle.com/<slug>)
+                            platform_slug_pattern = (
+                                rf"(github\.com|huggingface\.co|kaggle\.com)/"
+                                rf"({re.escape(slug_dash)}|{re.escape(slug_nodash)})(/|\?|$)"
+                            )
+                            if re.search(platform_slug_pattern, cand_url_lower):
+                                matched = True
+                                match_type = "platform_slug"
 
-            # Match against extracted title name (e.g. before " - ")
-            if title_name and contacted == title_name:
-                return True
+            if matched:
+                return {
+                    "match_type": match_type,
+                    "matched_key": contacted,
+                    "recruiter_record": dict(self.contacted_records_by_name.get(contacted, {})),
+                }
 
-            words = contacted.split()
-            # If contacted name has 2+ words (first + last name), check phrase in title or url slug
-            if len(words) >= 2:
-                # Word-boundary phrase search in full title
-                if re.search(r"\b" + re.escape(contacted) + r"\b", norm_title):
-                    return True
+        return None
 
-                # LinkedIn URL slug match (e.g. in/yigit-can-ozkaya or in/yigitcanozkaya)
-                slug_dash = "-".join(words)
-                slug_nodash = "".join(words)
-                slug_pattern = rf"/(in|pub)/({re.escape(slug_dash)}|{re.escape(slug_nodash)})(-[0-9a-z]+)?(/|\?|$)"
-                if re.search(slug_pattern, cand_url_lower):
-                    return True
-
-                # Community platform handle match (github.com/<slug>, huggingface.co/<slug>, kaggle.com/<slug>)
-                platform_slug_pattern = (
-                    rf"(github\.com|huggingface\.co|kaggle\.com)/"
-                    rf"({re.escape(slug_dash)}|{re.escape(slug_nodash)})(/|\?|$)"
-                )
-                if re.search(platform_slug_pattern, cand_url_lower):
-                    return True
-
-
-        return False
+    def is_contacted(self, candidate: dict[str, Any]) -> bool:
+        """Check if candidate matches any contacted candidate by URL or name."""
+        return self.get_contacted_match(candidate) is not None
 
 
 def resolve_contacted_candidates_path(campaign_dir: Path, config: dict[str, Any]) -> Path | None:

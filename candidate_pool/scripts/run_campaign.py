@@ -81,6 +81,11 @@ def main() -> None:
         default=None,
         help="Override ranking.max_workers for this run",
     )
+    parser.add_argument(
+        "--skip-contacted-eval",
+        action="store_true",
+        help="Skip independent evaluation and comparison logging for contacted candidates",
+    )
     args = parser.parse_args()
 
     campaign_dir = args.campaign_dir.resolve()
@@ -196,6 +201,18 @@ def main() -> None:
             pipeline_status.write(campaign_dir, "report", phases=planned_phases)
             shortlist_path = ReportGenerator(campaign_dir, config).run()
             logger.info("Report complete: %s", shortlist_path)
+
+        # Independent evaluation of contacted candidates (excluded from campaign shortlist)
+        if not args.skip_contacted_eval and not args.queries_only and not args.search_only:
+            try:
+                from contacted_evaluator import ContactedCandidateEvaluator
+
+                evaluator = ContactedCandidateEvaluator(campaign_dir, config)
+                count = evaluator.run()
+                if count > 0:
+                    logger.info("Evaluated and recorded %d contacted candidate(s) for HR comparison", count)
+            except Exception as e:
+                logger.warning("Contacted candidate evaluation failed: %s", e)
     finally:
         # Also on failure: a crashed run must not leave a phase looking perpetually active.
         pipeline_status.clear(campaign_dir)

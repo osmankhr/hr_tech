@@ -188,8 +188,10 @@ sections).
 - Provider init requires the matching API key for commercial providers (`EXA_API_KEY` / `DATALABS_API_KEY` / `APOLLO_API_KEY`). Community platforms (`github`, `huggingface`, `kaggle`) work with optional `GITHUB_TOKEN`, `HF_TOKEN`, and `KAGGLE_USERNAME`/`KAGGLE_KEY` env vars.
 - `platform_searchers.py` — implements `GitHubCandidateSearcher`, `HuggingFaceCandidateSearcher`, `KaggleCandidateSearcher`, and `MultiPlatformCandidateSearcher` with activity recency verification (`activity_days`, default 180 days), SSRF host allowlisting, identifier validation, and ING employee exclusion.
 - `_load_existing_pool()` — optional dedup against `dedup.existing_pool_path`.
-- `contacted_candidates.py` / `_load_contacted_store()` — eliminates previously contacted candidates from Excel (`.xlsx`) or CSV based on `Candidate Name` (with diacritic-tolerant Turkish/English normalization) and profile URLs.
+- `contacted_candidates.py` / `_load_contacted_store()` — eliminates previously contacted candidates from Excel (`.xlsx`) or CSV based on `Candidate Name` (with diacritic-tolerant Turkish/English normalization) and profile URLs, capturing recruiter metadata (status, notes, recruiter name).
+- Isolated contacted hits — candidate hits matching contacted records are saved into isolated `data/<location>/contacted_search_hits.json` files so campaign pools (`raw_results.json`) remain strictly non-contacted.
 - Replenishment loop — after eliminating contacted candidates, generates single search queries one by one using `QueryGenerator.generate_single_query` to search Exa until candidate count is `>=` the initial count.
+- `contacted_evaluator.py` (`ContactedCandidateEvaluator`) — independently filters and grades contacted candidates discovered during search, logging them to `candidate_pool/analysis/contacted_evaluations.jsonl` and exporting side-by-side comparison workbooks (`contacted_hr_vs_ai_comparison.xlsx` / `.csv`) for HR analysis without impacting campaign shortlist data.
 
 - `_build_pdl_sql_queries` / `_build_apollo_query_params` — hard-coded ML/AI-hiring-flavored
   fallback query templates (used only if `campaign.yaml` doesn't set `pdl_queries`/`apollo_queries`

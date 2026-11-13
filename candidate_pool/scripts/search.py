@@ -122,6 +122,17 @@ class ExaSearcher:
         self._existing_urls: set[str] = self._load_existing_pool()
         self._contacted_store: ContactedCandidatesStore | None = contacted_store
         self._query_generator = query_generator
+        self._contacted_hits: dict[str, list[dict[str, Any]]] = {}
+
+    @property
+    def contacted_hits(self) -> dict[str, list[dict[str, Any]]]:
+        if not hasattr(self, "_contacted_hits") or self._contacted_hits is None:
+            self._contacted_hits = {}
+        return self._contacted_hits
+
+    @contacted_hits.setter
+    def contacted_hits(self, value: dict[str, list[dict[str, Any]]]) -> None:
+        self._contacted_hits = value
 
     @property
     def platform_searcher(self) -> MultiPlatformCandidateSearcher | None:
@@ -782,12 +793,14 @@ class ExaSearcher:
             )
 
         # Filter out previously contacted candidates and replenish if needed
+        contacted_hits: list[dict[str, Any]] = []
         if not self.contacted_store.is_empty():
             initial_count = len(candidates)
             retained_candidates: list[dict[str, Any]] = []
             eliminated_count = 0
             for cand in candidates:
-                if self.contacted_store.is_contacted(cand):
+                match_info = self.contacted_store.get_contacted_match(cand)
+                if match_info is not None:
                     eliminated_count += 1
                     logger.info(
                         "[%s] Eliminated contacted candidate: %r (%s)",
@@ -795,6 +808,10 @@ class ExaSearcher:
                         cand.get("title"),
                         cand.get("url"),
                     )
+                    cand_copy = dict(cand)
+                    cand_copy["contacted_match"] = match_info
+                    cand_copy["search_bucket"] = loc_name
+                    contacted_hits.append(cand_copy)
                 else:
                     retained_candidates.append(cand)
 
@@ -849,12 +866,17 @@ class ExaSearcher:
                         batch = self._execute_query_batch(str(new_query), loc_name, seen_urls)
                         added = 0
                         for cand in batch:
-                            if self.contacted_store.is_contacted(cand):
+                            match_info = self.contacted_store.get_contacted_match(cand)
+                            if match_info is not None:
                                 logger.info(
                                     "[%s] Candidate %r matched contacted list during replenishment; skipping",
                                     loc_name,
                                     cand.get("title"),
                                 )
+                                cand_copy = dict(cand)
+                                cand_copy["contacted_match"] = match_info
+                                cand_copy["search_bucket"] = loc_name
+                                contacted_hits.append(cand_copy)
                             else:
                                 retained_candidates.append(cand)
                                 added += 1
@@ -889,8 +911,10 @@ class ExaSearcher:
                         else:
                             consecutive_empty = 0
 
+            self.contacted_hits[loc_name] = contacted_hits
             return retained_candidates, queries_used
 
+        self.contacted_hits[loc_name] = []
         return candidates, queries
 
     def run(self) -> dict[str, list[dict[str, Any]]]:
@@ -933,12 +957,19 @@ class ExaSearcher:
             with open(loc_dir / "raw_results.json", "w", encoding="utf-8") as f:
                 json.dump(candidates, f, indent=2, ensure_ascii=False)
 
+            contacted_for_loc = self.contacted_hits.get(loc_name, [])
+            if contacted_for_loc:
+                with open(loc_dir / "contacted_search_hits.json", "w", encoding="utf-8") as f:
+                    json.dump(contacted_for_loc, f, indent=2, ensure_ascii=False)
+                logger.info("[%s] Saved %d contacted candidate hits to isolated log", loc_name, len(contacted_for_loc))
+
             with open(loc_dir / "search_metadata.json", "w", encoding="utf-8") as f:
                 json.dump(
                     {
                         "location": loc_name,
                         "provider": self.provider,
                         "total_found": len(candidates),
+                        "total_contacted_hits": len(contacted_for_loc),
                         "queries": queries_used,
                         "timestamp": datetime.now(timezone.utc).isoformat(),
                     },
