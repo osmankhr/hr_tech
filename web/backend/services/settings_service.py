@@ -150,3 +150,153 @@ def _build_integrations_status_response() -> dict:
             },
         },
     }
+
+
+def _get_global_contacted_file() -> Path | None:
+    """Locate the current global contacted candidates spreadsheet if present."""
+    env_path = os.environ.get("CONTACTED_CANDIDATES_PATH")
+    if env_path:
+        p = Path(env_path).resolve()
+        if p.exists() and p.is_file():
+            return p
+
+    candidates = [
+        core.config.GLOBAL_CONTACTED_DIR / "contacted_candidates.xlsx",
+        core.config.GLOBAL_CONTACTED_DIR / "contacted_candidates.xls",
+        core.config.GLOBAL_CONTACTED_DIR / "contacted_candidates.csv",
+        core.config.GLOBAL_CONTACTED_DIR / "contacted.xlsx",
+        core.config.GLOBAL_CONTACTED_DIR / "contacted.csv",
+    ]
+    for p in candidates:
+        if p.exists() and p.is_file():
+            return p
+    return None
+
+
+def get_contacted_candidates_status() -> dict:
+    """Return status and metadata about the company-wide contacted candidates list."""
+    from datetime import datetime, timezone
+
+    file_path = _get_global_contacted_file()
+    if not file_path:
+        return {
+            "configured": False,
+            "filename": None,
+            "file_size_bytes": 0,
+            "updated_at": None,
+            "total_names": 0,
+            "total_urls": 0,
+            "comparison_report_available": core.config.COMPARISON_REPORT_XLSX.exists(),
+            "comparison_report_filename": (
+                core.config.COMPARISON_REPORT_XLSX.name
+                if core.config.COMPARISON_REPORT_XLSX.exists()
+                else None
+            ),
+        }
+
+    total_names = 0
+    total_urls = 0
+    try:
+        scripts_dir = str(core.config.CANDIDATE_POOL_ROOT / "scripts")
+        if scripts_dir not in sys.path:
+            sys.path.insert(0, scripts_dir)
+        from contacted_candidates import ContactedCandidatesStore
+
+        store = ContactedCandidatesStore(file_path)
+        total_names = len(store.contacted_names)
+        total_urls = len(store.contacted_urls)
+    except Exception as e:
+        logger.warning("Could not parse contacted file %s: %s", file_path, e)
+
+    stat = file_path.stat()
+    return {
+        "configured": True,
+        "filename": file_path.name,
+        "file_size_bytes": stat.st_size,
+        "updated_at": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
+        "total_names": total_names,
+        "total_urls": total_urls,
+        "comparison_report_available": core.config.COMPARISON_REPORT_XLSX.exists(),
+        "comparison_report_filename": (
+            core.config.COMPARISON_REPORT_XLSX.name
+            if core.config.COMPARISON_REPORT_XLSX.exists()
+            else None
+        ),
+    }
+
+
+def save_global_contacted_file(file_obj, filename: str) -> dict:
+    """Safely write an uploaded Excel or CSV contacted candidates list."""
+    import re
+    from fastapi import UploadFile
+
+    if not filename:
+        raise HTTPException(status_code=400, detail="Missing filename")
+
+    raw_name = Path(filename).name
+    safe_name = re.sub(r"[^a-zA-Z0-9._-]", "_", raw_name)
+    ext = Path(safe_name).suffix.lower()
+    if ext not in (".xlsx", ".xls", ".csv"):
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported format. Only Excel (.xlsx, .xls) and CSV (.csv) files are allowed.",
+        )
+
+    core.config.GLOBAL_CONTACTED_DIR.mkdir(parents=True, exist_ok=True)
+    target_path = (core.config.GLOBAL_CONTACTED_DIR / f"contacted_candidates{ext}").resolve()
+
+    MAX_BYTES = 25 * 1024 * 1024  # 25 MB limit
+    size = 0
+
+    # Clean up any existing alternative extensions to avoid stale files
+    for old_ext in (".xlsx", ".xls", ".csv"):
+        (core.config.GLOBAL_CONTACTED_DIR / f"contacted_candidates{old_ext}").unlink(missing_ok=True)
+
+    with open(target_path, "wb") as buffer:
+        while True:
+            chunk = file_obj.read(8192)
+            if not chunk:
+                break
+            size += len(chunk)
+            if size > MAX_BYTES:
+                buffer.close()
+                target_path.unlink(missing_ok=True)
+                raise HTTPException(status_code=400, detail="File exceeds 25 MB size limit")
+            buffer.write(chunk)
+
+    # Validate file by attempting to parse candidates from it
+    try:
+        scripts_dir = str(core.config.CANDIDATE_POOL_ROOT / "scripts")
+        if scripts_dir not in sys.path:
+            sys.path.insert(0, scripts_dir)
+        from contacted_candidates import ContactedCandidatesStore
+
+        store = ContactedCandidatesStore(target_path)
+        if store.is_empty():
+            target_path.unlink(missing_ok=True)
+            raise HTTPException(
+                status_code=400,
+                detail="No candidate names or URLs could be identified in the uploaded file. Please check column headers.",
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        target_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail=f"Failed to parse file: {e}")
+
+    # Set environment variable so every campaign pipeline execution uses it
+    os.environ["CONTACTED_CANDIDATES_PATH"] = str(target_path)
+    return get_contacted_candidates_status()
+
+
+def delete_global_contacted_file() -> dict:
+    """Remove all global contacted candidates spreadsheets."""
+    removed = False
+    for ext in (".xlsx", ".xls", ".csv"):
+        p = core.config.GLOBAL_CONTACTED_DIR / f"contacted_candidates{ext}"
+        if p.exists():
+            p.unlink(missing_ok=True)
+            removed = True
+    os.environ.pop("CONTACTED_CANDIDATES_PATH", None)
+    return get_contacted_candidates_status()
+

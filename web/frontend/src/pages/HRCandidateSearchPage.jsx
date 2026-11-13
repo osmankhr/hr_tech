@@ -1585,6 +1585,14 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
                       <option key={status}>{status}</option>
                     ))}
                   </select>
+
+                  <Button
+                    variant="outline"
+                    onClick={() => setView("settings")}
+                    className="whitespace-nowrap"
+                  >
+                    Contacted List (Excel)
+                  </Button>
                 </div>
               </div>
 

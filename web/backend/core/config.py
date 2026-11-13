@@ -24,6 +24,14 @@ UPLOAD_DIR = BACKEND_DIR / "uploaded_cvs"
 FRONTEND_DIST = BACKEND_DIR.parent / "frontend" / "dist"
 MAX_WORKERS_CAP = 20
 
+# Global contacted candidates paths (shared across all campaigns)
+GLOBAL_CONTACTED_DIR = CANDIDATE_POOL_ROOT / "data"
+GLOBAL_ANALYSIS_DIR = CANDIDATE_POOL_ROOT / "analysis"
+COMPARISON_REPORT_XLSX = GLOBAL_ANALYSIS_DIR / "contacted_hr_vs_ai_comparison.xlsx"
+COMPARISON_REPORT_CSV = GLOBAL_ANALYSIS_DIR / "contacted_hr_vs_ai_comparison.csv"
+
+GLOBAL_CONTACTED_DIR.mkdir(parents=True, exist_ok=True)
+GLOBAL_ANALYSIS_DIR.mkdir(parents=True, exist_ok=True)
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 CORS_ORIGINS = [

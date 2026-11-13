@@ -100,6 +100,64 @@ export const campaignApi = {
     return httpClient.put("/settings/integrations", payload);
   },
 
+  getContactedCandidatesStatus() {
+    return httpClient.get("/settings/contacted-candidates");
+  },
+
+  uploadContactedCandidates(file) {
+    const formData = new FormData();
+    formData.append("file", file);
+    return httpClient.post("/settings/contacted-candidates", formData);
+  },
+
+  deleteContactedCandidates() {
+    return httpClient.delete("/settings/contacted-candidates");
+  },
+
+  async downloadContactedCandidates() {
+    const token = localStorage.getItem("hr_auth_token");
+    const response = await fetch(`${API_BASE_URL}/settings/contacted-candidates/download`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!response.ok) throw new Error("Could not download contacted candidates file.");
+    const blob = await response.blob();
+    const disposition = response.headers.get("Content-Disposition");
+    let filename = "contacted_candidates.xlsx";
+    if (disposition && disposition.includes("filename=")) {
+      filename = disposition.split("filename=")[1].replace(/["']/g, "").trim();
+    }
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    window.URL.revokeObjectURL(url);
+  },
+
+  async downloadComparisonReport() {
+    const token = localStorage.getItem("hr_auth_token");
+    const response = await fetch(`${API_BASE_URL}/settings/contacted-candidates/comparison-report`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!response.ok) throw new Error("Could not download comparison report.");
+    const blob = await response.blob();
+    const disposition = response.headers.get("Content-Disposition");
+    let filename = "contacted_hr_vs_ai_comparison.xlsx";
+    if (disposition && disposition.includes("filename=")) {
+      filename = disposition.split("filename=")[1].replace(/["']/g, "").trim();
+    }
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    window.URL.revokeObjectURL(url);
+  },
+
   getScoringExplainer(id) {
     return httpClient.get(`/campaigns/${id}/pipeline/scoring-explainer`);
   },

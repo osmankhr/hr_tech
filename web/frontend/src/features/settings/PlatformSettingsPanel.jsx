@@ -20,6 +20,12 @@ export function PlatformSettingsPanel() {
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
 
+  const [contactedStatus, setContactedStatus] = useState(null);
+  const [contactedLoading, setContactedLoading] = useState(true);
+  const [contactedUploading, setContactedUploading] = useState(false);
+  const [contactedError, setContactedError] = useState("");
+  const [contactedMessage, setContactedMessage] = useState("");
+
   const [form, setForm] = useState({
     KAGGLE_API_TOKEN: "",
     KAGGLE_USERNAME: "",
@@ -28,6 +34,18 @@ export function PlatformSettingsPanel() {
     HF_TOKEN: "",
     EXA_API_KEY: "",
   });
+
+  const loadContactedStatus = useCallback(async () => {
+    setContactedLoading(true);
+    try {
+      const data = await campaignApi.getContactedCandidatesStatus();
+      setContactedStatus(data);
+    } catch (err) {
+      setContactedError(err.message || "Could not load contacted candidates status.");
+    } finally {
+      setContactedLoading(false);
+    }
+  }, []);
 
   const loadSettings = useCallback(async () => {
     setLoading(true);
@@ -50,7 +68,8 @@ export function PlatformSettingsPanel() {
 
   useEffect(() => {
     loadSettings();
-  }, [loadSettings]);
+    loadContactedStatus();
+  }, [loadSettings, loadContactedStatus]);
 
   const updateField = (key, value) => {
     setForm((prev) => ({ ...prev, [key]: value }));
@@ -156,11 +175,208 @@ export function PlatformSettingsPanel() {
     }
   };
 
+  const handleContactedUpload = async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    setContactedUploading(true);
+    setContactedError("");
+    setContactedMessage("");
+    try {
+      const res = await campaignApi.uploadContactedCandidates(file);
+      setContactedStatus(res);
+      setContactedMessage(
+        `Successfully uploaded "${file.name}". Indexed ${res.total_names} candidate names and ${res.total_urls} profile URLs across all campaigns.`
+      );
+    } catch (err) {
+      setContactedError(err.message || "Failed to upload contacted candidates file.");
+    } finally {
+      setContactedUploading(false);
+      event.target.value = "";
+    }
+  };
+
+  const handleContactedDelete = async () => {
+    if (!window.confirm("Are you sure you want to remove the company-wide contacted candidates list?")) {
+      return;
+    }
+    setContactedUploading(true);
+    setContactedError("");
+    setContactedMessage("");
+    try {
+      const res = await campaignApi.deleteContactedCandidates();
+      setContactedStatus(res);
+      setContactedMessage("Company contacted candidates list removed.");
+    } catch (err) {
+      setContactedError(err.message || "Could not remove contacted candidates list.");
+    } finally {
+      setContactedUploading(false);
+    }
+  };
+
+  const handleContactedDownload = async () => {
+    try {
+      await campaignApi.downloadContactedCandidates();
+    } catch (err) {
+      setContactedError(err.message || "Could not download file.");
+    }
+  };
+
+  const handleComparisonDownload = async () => {
+    try {
+      await campaignApi.downloadComparisonReport();
+    } catch (err) {
+      setContactedError(err.message || "Could not download comparison report.");
+    }
+  };
+
   const keys = status?.keys || {};
   const platforms = status?.platforms || {};
 
   return (
     <section className="space-y-6">
+      {/* Company Contacted Candidates Card */}
+      <Card className="p-5">
+        <div className="mb-4 flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <div className="flex items-center gap-2">
+              <h3 className="text-base font-semibold text-slate-900">
+                Company Contacted Candidates
+              </h3>
+              <Badge tone={contactedStatus?.configured ? "green" : "amber"}>
+                {contactedStatus?.configured ? "Active Across All Campaigns" : "No List Uploaded"}
+              </Badge>
+            </div>
+            <p className="mt-1 text-sm text-slate-500">
+              Upload your company-wide Excel (<code>.xlsx</code>, <code>.xls</code>) or <code>.csv</code> list of contacted candidates.
+              The search pipeline automatically eliminates these candidates across all campaigns, replenishes the pool with fresh profiles,
+              and evaluates them independently so HR can compare system reviews against recruiter decisions.
+            </p>
+          </div>
+        </div>
+
+        {contactedError && (
+          <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+            {contactedError}
+          </div>
+        )}
+
+        {contactedMessage && (
+          <div className="mb-4 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
+            {contactedMessage}
+          </div>
+        )}
+
+        {contactedLoading ? (
+          <p className="text-sm text-slate-500">Loading contacted candidates status...</p>
+        ) : (
+          <div className="space-y-4">
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-3.5">
+                <span className="text-xs font-semibold text-slate-800">Status</span>
+                <p className="mt-1 text-sm font-medium text-slate-900">
+                  {contactedStatus?.configured ? "Active (Deduplicating)" : "Inactive"}
+                </p>
+                <p className="mt-0.5 text-xs text-slate-500">
+                  {contactedStatus?.configured
+                    ? `File: ${contactedStatus.filename}`
+                    : "No spreadsheet active"}
+                </p>
+              </div>
+
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-3.5">
+                <span className="text-xs font-semibold text-slate-800">Indexed Candidates</span>
+                <p className="mt-1 text-sm font-medium text-slate-900">
+                  {contactedStatus?.total_names || 0} names
+                </p>
+                <p className="mt-0.5 text-xs text-slate-500">
+                  {contactedStatus?.total_urls || 0} profile URLs
+                </p>
+              </div>
+
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-3.5">
+                <span className="text-xs font-semibold text-slate-800">Last Updated</span>
+                <p className="mt-1 text-sm font-medium text-slate-900">
+                  {contactedStatus?.updated_at
+                    ? new Date(contactedStatus.updated_at).toLocaleDateString()
+                    : "—"}
+                </p>
+                <p className="mt-0.5 text-xs text-slate-500">
+                  {contactedStatus?.file_size_bytes
+                    ? `${(contactedStatus.file_size_bytes / 1024).toFixed(1)} KB`
+                    : "—"}
+                </p>
+              </div>
+
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-3.5">
+                <span className="text-xs font-semibold text-slate-800">HR vs AI Benchmark</span>
+                <p className="mt-1 text-sm font-medium text-slate-900">
+                  {contactedStatus?.comparison_report_available ? "Ready" : "Pending runs"}
+                </p>
+                <p className="mt-0.5 text-xs text-slate-500">
+                  {contactedStatus?.comparison_report_available
+                    ? "Comparison spreadsheet available"
+                    : "Evaluates on next campaign run"}
+                </p>
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-slate-200 p-4">
+              <h4 className="text-sm font-medium text-slate-800">
+                Upload or Replace Contacted Candidates List
+              </h4>
+              <p className="mt-0.5 text-xs text-slate-500">
+                Supported: <code>.xlsx</code>, <code>.xls</code>, <code>.csv</code> (up to 25 MB).
+                Matches on columns: <i>Candidate Name</i> (Turkish/English normalized), <i>Status</i>, <i>Notes/Feedback</i>, <i>Recruiter</i>, and <i>Profile URL</i>.
+              </p>
+
+              <div className="mt-3 flex flex-wrap items-center gap-3">
+                <label className="inline-flex cursor-pointer items-center justify-center gap-2 rounded-lg border border-slate-900 bg-slate-900 px-4 py-2 text-sm font-medium text-white transition hover:bg-slate-800 disabled:opacity-50">
+                  <span>{contactedUploading ? "Processing File..." : "Choose Excel / CSV File"}</span>
+                  <input
+                    type="file"
+                    accept=".xlsx,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv"
+                    className="hidden"
+                    disabled={contactedUploading}
+                    onChange={handleContactedUpload}
+                  />
+                </label>
+
+                {contactedStatus?.configured && (
+                  <>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={handleContactedDownload}
+                    >
+                      Download Active List
+                    </Button>
+
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="text-red-700 hover:bg-red-50"
+                      onClick={handleContactedDelete}
+                    >
+                      Remove List
+                    </Button>
+                  </>
+                )}
+
+                {contactedStatus?.comparison_report_available && (
+                  <Button
+                    type="button"
+                    variant="primary"
+                    onClick={handleComparisonDownload}
+                  >
+                    Download HR vs AI Benchmark (.xlsx)
+                  </Button>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+      </Card>
+
       <Card className="p-5">
         <div className="mb-4 flex flex-wrap items-start justify-between gap-4">
           <div>

@@ -353,4 +353,17 @@ def resolve_contacted_candidates_path(campaign_dir: Path, config: dict[str, Any]
         if p.exists():
             return p
 
+    # 4. Global shared fallback locations across all campaigns
+    global_dir = Path(__file__).resolve().parent.parent / "data"
+    global_candidates = [
+        global_dir / "contacted_candidates.xlsx",
+        global_dir / "contacted_candidates.xls",
+        global_dir / "contacted_candidates.csv",
+        global_dir / "contacted.xlsx",
+        global_dir / "contacted.csv",
+    ]
+    for p in global_candidates:
+        if p.exists():
+            return p
+
     return None
