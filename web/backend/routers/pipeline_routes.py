@@ -1197,14 +1197,27 @@ def export_campaign_excel(
             db_conn = get_connection()
             rows = db_conn.execute("""
                 SELECT 
-                    c.id, c.name, c.role, c.location, c.experience_years, c.source, c.profile_url, c.skills, c.notes,
-                    cc.status,
-                    cr.total_score, cr.recommendation
-                FROM campaign_candidates cc
-                JOIN candidates c ON cc.candidate_id = c.id
-                LEFT JOIN candidate_rankings cr ON cr.campaign_id = cc.campaign_id AND cr.candidate_id = c.id
+                    cand.id,
+                    cand.candidate_code,
+                    cand.full_name,
+                    cand.email,
+                    cand.current_title,
+                    cand.location,
+                    cand.source,
+                    cand.profile_url,
+                    cand.score,
+                    cand.status,
+                    cand.years_experience,
+                    cand.notes,
+                    cand.skills,
+                    cr.manual_score,
+                    cr.category AS ranking_category,
+                    cr.rank AS ranking_rank
+                FROM candidate_profile_summary cand
+                JOIN campaign_candidates cc ON cc.candidate_id = cand.id
+                LEFT JOIN candidate_rankings cr ON cr.campaign_id = cc.campaign_id AND cr.candidate_id = cand.id
                 WHERE cc.campaign_id = ?
-                ORDER BY COALESCE(cr.total_score, 0) DESC
+                ORDER BY COALESCE(cr.rank, 999999) ASC, COALESCE(cr.manual_score, cand.score, 0) DESC, cand.full_name ASC
             """, (campaign_id,)).fetchall()
             db_conn.close()
 
@@ -1219,12 +1232,12 @@ def export_campaign_excel(
                         records = []
                         for rank, cand in enumerate(raw_data, start=1):
                             records.append({
-                                "Rank": rank,
-                                "Candidate Name": cand.get("name") or "",
-                                "Role": cand.get("role") or "",
-                                "Score": cand.get("score") or cand.get("total_score") or "",
-                                "Recommendation": cand.get("recommendation") or cand.get("decision") or "",
-                                "Experience (Years)": cand.get("experience_years") or cand.get("yearsExperience") or "",
+                                "Rank": cand.get("rank") or rank,
+                                "Candidate Name": cand.get("name") or cand.get("full_name") or "",
+                                "Role": cand.get("role") or cand.get("current_title") or "",
+                                "Score": cand.get("score") or cand.get("total_score") or cand.get("manual_score") or "",
+                                "Category": cand.get("category") or cand.get("ranking_category") or "",
+                                "Experience (Years)": cand.get("experience_years") or cand.get("yearsExperience") or cand.get("years_experience") or "",
                                 "Location": cand.get("location") or "",
                                 "Source": cand.get("source") or "",
                                 "Profile URL": cand.get("url") or cand.get("profile_url") or "",
@@ -1239,14 +1252,19 @@ def export_campaign_excel(
                     df = pd.DataFrame()
             else:
                 records = []
-                for rank, r in enumerate(rows, start=1):
+                for rank_idx, r in enumerate(rows, start=1):
+                    score_val = (
+                        round(float(r["manual_score"]), 2)
+                        if r["manual_score"] is not None
+                        else (round(float(r["score"]), 2) if r["score"] is not None else "")
+                    )
                     records.append({
-                        "Rank": rank,
-                        "Candidate Name": r["name"] or "",
-                        "Role": r["role"] or "",
-                        "Score": round(float(r["total_score"]), 2) if r["total_score"] is not None else "",
-                        "Recommendation": r["recommendation"] or "",
-                        "Experience (Years)": r["experience_years"] if r["experience_years"] is not None else "",
+                        "Rank": r["ranking_rank"] or rank_idx,
+                        "Candidate Name": r["full_name"] or "",
+                        "Role": r["current_title"] or "",
+                        "Score": score_val,
+                        "Category": r["ranking_category"] or "",
+                        "Experience (Years)": r["years_experience"] if r["years_experience"] is not None else "",
                         "Location": r["location"] or "",
                         "Source": r["source"] or "",
                         "Profile URL": r["profile_url"] or "",
