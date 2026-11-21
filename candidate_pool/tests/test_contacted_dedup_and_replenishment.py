@@ -114,6 +114,46 @@ class TestContactedCandidatesStore:
         }
         assert store.is_contacted(cand) is True
 
+    def test_turkish_and_split_headers_and_multiple_urls(self, tmp_path: Path):
+        excel_path = tmp_path / "turkish_contacted.xlsx"
+        df = pd.DataFrame({
+            "Ad": ["Mustafa", "Zeynep"],
+            "Soyad": ["Öztürk", "Çelik"],
+            "Profil Linki": ["https://linkedin.com/in/mustafaozturk", "linkedin.com/in/zeynepcelik"],
+            "GitHub Profili": ["https://github.com/mustafaozturk", "github.com/zeynepcelik"],
+        })
+        with pd.ExcelWriter(excel_path, engine="openpyxl") as writer:
+            df.to_excel(writer, index=False)
+
+        store = ContactedCandidatesStore(excel_path)
+        assert len(store.contacted_names) == 2
+        assert "mustafa ozturk" in store.contacted_names
+        assert "zeynep celik" in store.contacted_names
+        # Both LinkedIn and GitHub URLs should be captured
+        assert len(store.contacted_urls) >= 4
+        assert "linkedin.com/in/mustafaozturk" in store.contacted_urls
+        assert "github.com/mustafaozturk" in store.contacted_urls
+        assert "linkedin.com/in/zeynepcelik" in store.contacted_urls
+        assert "github.com/zeynepcelik" in store.contacted_urls
+
+    def test_promoted_title_row(self, tmp_path: Path):
+        excel_path = tmp_path / "title_row.xlsx"
+        # Row 0: Company title
+        # Row 1: Actual headers
+        # Row 2+: Data
+        raw_rows = [
+            ["Company Contacted Candidates 2026", None, None],
+            ["Aday Adı Soyadı", "Durum", "Profil URL"],
+            ["Burak Yılmaz", "Görüşüldü", "https://linkedin.com/in/burakyilmaz"],
+        ]
+        df = pd.DataFrame(raw_rows)
+        with pd.ExcelWriter(excel_path, engine="openpyxl") as writer:
+            df.to_excel(writer, header=False, index=False)
+
+        store = ContactedCandidatesStore(excel_path)
+        assert "burak yilmaz" in store.contacted_names
+        assert "linkedin.com/in/burakyilmaz" in store.contacted_urls
+
 
 class TestReplenishmentWorkflow:
     def test_replenishment_loop_reaches_target_count(self, tmp_path: Path):

@@ -4,3 +4,4 @@ python-multipart
 pyyaml
 pandas
 openpyxl
+xlrd>=2.0.1

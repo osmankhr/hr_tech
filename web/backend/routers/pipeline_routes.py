@@ -1189,9 +1189,88 @@ def export_campaign_excel(
     )
 
     if not xlsx_files:
-        raise HTTPException(status_code=404, detail="No Excel export found. Run the pipeline first.")
+        # Generate export on the fly from SQLite database candidates or pipeline JSON files
+        try:
+            import pandas as pd
+            from datetime import datetime
 
-    latest = xlsx_files[0]
+            db_conn = get_connection()
+            rows = db_conn.execute("""
+                SELECT 
+                    c.id, c.name, c.role, c.location, c.experience_years, c.source, c.profile_url, c.skills, c.notes,
+                    cc.status,
+                    cr.total_score, cr.recommendation
+                FROM campaign_candidates cc
+                JOIN candidates c ON cc.candidate_id = c.id
+                LEFT JOIN candidate_rankings cr ON cr.campaign_id = cc.campaign_id AND cr.candidate_id = c.id
+                WHERE cc.campaign_id = ?
+                ORDER BY COALESCE(cr.total_score, 0) DESC
+            """, (campaign_id,)).fetchall()
+            db_conn.close()
+
+            if not rows:
+                candidates_json = pipeline_dir / "data" / "shortlist.json"
+                if not candidates_json.exists():
+                    candidates_json = pipeline_dir / "data" / "ranked_candidates.json"
+
+                if candidates_json.exists():
+                    raw_data = json.loads(candidates_json.read_text(encoding="utf-8"))
+                    if isinstance(raw_data, list):
+                        records = []
+                        for rank, cand in enumerate(raw_data, start=1):
+                            records.append({
+                                "Rank": rank,
+                                "Candidate Name": cand.get("name") or "",
+                                "Role": cand.get("role") or "",
+                                "Score": cand.get("score") or cand.get("total_score") or "",
+                                "Recommendation": cand.get("recommendation") or cand.get("decision") or "",
+                                "Experience (Years)": cand.get("experience_years") or cand.get("yearsExperience") or "",
+                                "Location": cand.get("location") or "",
+                                "Source": cand.get("source") or "",
+                                "Profile URL": cand.get("url") or cand.get("profile_url") or "",
+                                "Skills": ", ".join(cand.get("skills", [])) if isinstance(cand.get("skills"), list) else str(cand.get("skills") or ""),
+                                "Status": cand.get("status") or "Shortlisted",
+                                "Notes": cand.get("notes") or cand.get("summary") or "",
+                            })
+                        df = pd.DataFrame(records)
+                    else:
+                        df = pd.DataFrame()
+                else:
+                    df = pd.DataFrame()
+            else:
+                records = []
+                for rank, r in enumerate(rows, start=1):
+                    records.append({
+                        "Rank": rank,
+                        "Candidate Name": r["name"] or "",
+                        "Role": r["role"] or "",
+                        "Score": round(float(r["total_score"]), 2) if r["total_score"] is not None else "",
+                        "Recommendation": r["recommendation"] or "",
+                        "Experience (Years)": r["experience_years"] if r["experience_years"] is not None else "",
+                        "Location": r["location"] or "",
+                        "Source": r["source"] or "",
+                        "Profile URL": r["profile_url"] or "",
+                        "Skills": r["skills"] or "",
+                        "Status": r["status"] or "",
+                        "Notes": r["notes"] or "",
+                    })
+                df = pd.DataFrame(records)
+
+            if df.empty:
+                raise HTTPException(status_code=404, detail="No candidates found for this campaign yet. Run the pipeline first.")
+
+            output_dir.mkdir(parents=True, exist_ok=True)
+            gen_path = output_dir / f"shortlist_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+            with pd.ExcelWriter(gen_path, engine="openpyxl") as writer:
+                df.to_excel(writer, sheet_name="Candidates", index=False)
+            latest = gen_path
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.exception("Failed to dynamically generate Excel: %s", e)
+            raise HTTPException(status_code=404, detail=f"No Excel export found and could not generate: {str(e)}")
+    else:
+        latest = xlsx_files[0]
     if not latest.resolve().is_relative_to(output_dir.resolve()):
         raise HTTPException(status_code=403, detail="Access denied")
     suffix = f"_v{version_number}" if version_number is not None else ""

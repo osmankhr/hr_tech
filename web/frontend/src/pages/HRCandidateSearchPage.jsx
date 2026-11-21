@@ -5,6 +5,8 @@ import { candidateApi } from "../api/candidateApi";
 import { AppHeader } from "../components/layout/AppHeader";
 import { Sidebar } from "../components/layout/Sidebar";
 import { Card } from "../components/ui/Card";
+import { Button } from "../components/ui/Button";
+import { ErrorBoundary } from "../components/ui/ErrorBoundary";
 import { Icons } from "../components/ui/Icon";
 import { KPI } from "../components/ui/KPI";
 import { API_BASE_URL } from "../config/api";
@@ -1596,12 +1598,14 @@ export default function HRCandidateSearchPage({ currentUser, onSignOut }) {
                 </div>
               </div>
 
-              <CandidatePanel
-                candidates={filteredCandidates}
-                full
-                onOpenCandidate={setSelectedCandidate}
-                onEditCandidate={setEditingCandidate}
-              />
+              <ErrorBoundary title="Candidates database failed to load">
+                <CandidatePanel
+                  candidates={filteredCandidates}
+                  full
+                  onOpenCandidate={setSelectedCandidate}
+                  onEditCandidate={setEditingCandidate}
+                />
+              </ErrorBoundary>
             </section>
           )}
 

@@ -1,6 +1,7 @@
 import AuthPage from "./pages/AuthPage";
 import HRCandidateSearchPage from "./pages/HRCandidateSearchPage";
 import { useAuth } from "./hooks/useAuth";
+import { ErrorBoundary } from "./components/ui/ErrorBoundary";
 
 function App() {
   const { user, authLoading, authError, signIn, signOut } = useAuth();
@@ -22,7 +23,11 @@ function App() {
     );
   }
 
-  return <HRCandidateSearchPage currentUser={user} onSignOut={signOut} />;
+  return (
+    <ErrorBoundary title="Application Error">
+      <HRCandidateSearchPage currentUser={user} onSignOut={signOut} />
+    </ErrorBoundary>
+  );
 }
 
 export default App;

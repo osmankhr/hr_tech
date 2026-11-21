@@ -252,6 +252,12 @@ def save_global_contacted_file(file_obj, filename: str) -> dict:
     for old_ext in (".xlsx", ".xls", ".csv"):
         (core.config.GLOBAL_CONTACTED_DIR / f"contacted_candidates{old_ext}").unlink(missing_ok=True)
 
+    if hasattr(file_obj, "seek"):
+        try:
+            file_obj.seek(0)
+        except Exception:
+            pass
+
     with open(target_path, "wb") as buffer:
         while True:
             chunk = file_obj.read(8192)
@@ -276,7 +282,7 @@ def save_global_contacted_file(file_obj, filename: str) -> dict:
             target_path.unlink(missing_ok=True)
             raise HTTPException(
                 status_code=400,
-                detail="No candidate names or URLs could be identified in the uploaded file. Please check column headers.",
+                detail="Yüklenen Excel/CSV dosyasında geçerli aday adı veya profil bağlantısı tespit edilemedi. Lütfen sütun başlıklarınızda 'Ad Soyad', 'Candidate Name', 'Aday', 'Profil' veya 'LinkedIn' gibi alanlar bulunduğundan emin olun.",
             )
     except HTTPException:
         raise

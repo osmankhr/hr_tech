@@ -51,31 +51,94 @@ NAME_COLUMN_ALIASES = [
     "candidate_name",
     "candidatename",
     "candidate",
+    "candidates",
     "full name",
     "fullname",
     "name",
+    "person name",
+    "talent",
+    "talent name",
+    "contact",
+    "contact name",
     "ad soyad",
     "ad_soyad",
+    "ad soyadi",
+    "adi soyadi",
+    "ad ve soyad",
+    "adi ve soyadi",
     "aday adi",
     "aday adı",
+    "aday adi soyadi",
+    "aday adı soyadı",
     "aday",
+    "adaylar",
     "isim",
+    "isim soyad",
+    "isim soyisim",
+    "isim ve soyisim",
+]
+
+FIRST_NAME_ALIASES = [
+    "first name",
+    "first_name",
+    "firstname",
+    "ad",
+    "adi",
+    "adı",
+    "isim",
+]
+
+LAST_NAME_ALIASES = [
+    "last name",
+    "last_name",
+    "lastname",
+    "soyad",
+    "soyadi",
+    "soyadı",
+    "soyisim",
 ]
 
 # Profile URL column aliases
 URL_COLUMN_ALIASES = [
     "url",
+    "urls",
+    "link",
+    "links",
+    "baglanti",
+    "bağlantı",
     "linkedin",
     "linkedin_url",
+    "linkedin url",
+    "linkedin profili",
+    "linkedin profile",
     "github",
     "github_url",
+    "github url",
+    "github profili",
+    "github profile",
     "huggingface",
     "huggingface_url",
+    "huggingface url",
+    "huggingface profili",
     "kaggle",
     "kaggle_url",
+    "kaggle url",
+    "kaggle profili",
     "profile_url",
+    "profile url",
     "profile",
-    "link",
+    "profiles",
+    "profil",
+    "profil_url",
+    "profil url",
+    "profil linki",
+    "profil_linki",
+    "cv",
+    "cv_link",
+    "cv link",
+    "ozgecmis",
+    "özgeçmiş",
+    "özgeçmiş linki",
 ]
 
 # Turkish to Latin character transliteration map
@@ -130,15 +193,23 @@ def normalize_url(url: str) -> str:
     """Normalize a candidate URL for reliable comparison."""
     if not url or not isinstance(url, str):
         return ""
-    parsed = urlparse(url.strip())
-    netloc = parsed.netloc.lower()
-    if netloc.startswith("www."):
-        netloc = netloc[4:]
-    # Normalize regional linkedin subdomains: tr.linkedin.com -> linkedin.com
-    if "linkedin.com" in netloc:
-        netloc = "linkedin.com"
-    path = parsed.path.rstrip("/")
-    return f"{netloc}{path}".lower()
+    raw = url.strip()
+    if not raw:
+        return ""
+    if not raw.startswith("http://") and not raw.startswith("https://"):
+        raw = "https://" + raw
+    try:
+        parsed = urlparse(raw)
+        netloc = parsed.netloc.lower()
+        if netloc.startswith("www."):
+            netloc = netloc[4:]
+        # Normalize regional linkedin subdomains: tr.linkedin.com -> linkedin.com
+        if "linkedin.com" in netloc:
+            netloc = "linkedin.com"
+        path = parsed.path.rstrip("/")
+        return f"{netloc}{path}".lower()
+    except Exception:
+        return ""
 
 
 def extract_name_from_title(title: str) -> str:
@@ -206,23 +277,95 @@ class ContactedCandidatesStore:
             file_path.name,
         )
 
+    def _promote_header_if_needed(self, df: pd.DataFrame) -> pd.DataFrame:
+        """If the initial DataFrame has dummy or unaligned headers (e.g. Unnamed: 0), inspect top rows for true header."""
+        if df.empty:
+            return df
+
+        def is_header_name(val):
+            norm = normalize_turkish_text(str(val)).strip()
+            if not norm or len(norm) > 35:
+                return False
+            return (
+                norm in NAME_COLUMN_ALIASES
+                or norm in URL_COLUMN_ALIASES
+                or norm in FIRST_NAME_ALIASES
+                or norm in LAST_NAME_ALIASES
+            )
+
+        def has_recognized_col(cols):
+            return any(is_header_name(c) for c in cols)
+
+        if has_recognized_col(df.columns):
+            return df
+
+        for idx in range(min(5, len(df))):
+            row_vals = df.iloc[idx].tolist()
+            if has_recognized_col(row_vals):
+                new_header = [str(v).strip() for v in row_vals]
+                new_df = df.iloc[idx + 1:].copy()
+                new_df.columns = new_header
+                return new_df
+
+        return df
+
     def _extract_from_df(self, df: pd.DataFrame) -> None:
-        # Normalize column header names
-        col_map = {str(col).strip().lower(): col for col in df.columns}
+        df = self._promote_header_if_needed(df)
+
+        # Normalize column header names: both raw lower and Turkish normalized
+        col_map = {}
+        for col in df.columns:
+            raw_key = str(col).strip().lower()
+            norm_key = normalize_turkish_text(str(col))
+            col_map[raw_key] = col
+            col_map[norm_key] = col
 
         # Look for candidate name column
         name_col = None
         for alias in NAME_COLUMN_ALIASES:
+            norm_alias = normalize_turkish_text(alias)
             if alias in col_map:
                 name_col = col_map[alias]
                 break
-
-        # Look for url column
-        url_col = None
-        for alias in URL_COLUMN_ALIASES:
-            if alias in col_map:
-                url_col = col_map[alias]
+            if norm_alias in col_map:
+                name_col = col_map[norm_alias]
                 break
+
+        # Look for split first name and last name columns
+        first_col = None
+        last_col = None
+        if name_col is None:
+            for alias in FIRST_NAME_ALIASES:
+                norm_alias = normalize_turkish_text(alias)
+                if alias in col_map:
+                    first_col = col_map[alias]
+                    break
+                if norm_alias in col_map:
+                    first_col = col_map[norm_alias]
+                    break
+
+            for alias in LAST_NAME_ALIASES:
+                norm_alias = normalize_turkish_text(alias)
+                if alias in col_map:
+                    last_col = col_map[alias]
+                    break
+                if norm_alias in col_map:
+                    last_col = col_map[norm_alias]
+                    break
+
+        # Identify ALL URL columns
+        url_cols = []
+        for alias in URL_COLUMN_ALIASES:
+            norm_alias = normalize_turkish_text(alias)
+            if alias in col_map and col_map[alias] not in url_cols:
+                url_cols.append(col_map[alias])
+            if norm_alias in col_map and col_map[norm_alias] not in url_cols:
+                url_cols.append(col_map[norm_alias])
+
+        url_pattern = re.compile(
+            r"(https?://[^\s\"'<>]+|linkedin\.com/[^\s\"'<>]+|github\.com/[^\s\"'<>]+|huggingface\.co/[^\s\"'<>]+|kaggle\.com/[^\s\"'<>]+)",
+            re.IGNORECASE,
+        )
 
         for _, row in df.iterrows():
             row_dict: dict[str, Any] = {}
@@ -232,19 +375,43 @@ class ContactedCandidatesStore:
                     if val_str:
                         row_dict[str(col_name)] = val_str
 
+            # 1. Candidate Name
+            cand_name = None
             if name_col is not None and name_col in row and pd.notna(row[name_col]):
-                cleaned = clean_candidate_name(str(row[name_col]))
+                cand_name = str(row[name_col]).strip()
+            elif first_col is not None and last_col is not None and first_col in row and last_col in row:
+                fn = str(row[first_col]).strip() if pd.notna(row[first_col]) else ""
+                ln = str(row[last_col]).strip() if pd.notna(row[last_col]) else ""
+                if fn or ln:
+                    cand_name = f"{fn} {ln}".strip()
+
+            if cand_name:
+                cleaned = clean_candidate_name(cand_name)
                 if cleaned and len(cleaned) >= 2:
                     self.contacted_names.add(cleaned)
                     if cleaned not in self.contacted_records_by_name:
                         self.contacted_records_by_name[cleaned] = row_dict
 
-            if url_col is not None and url_col in row and pd.notna(row[url_col]):
-                norm = normalize_url(str(row[url_col]))
-                if norm:
-                    self.contacted_urls.add(norm)
-                    if norm not in self.contacted_records_by_url:
-                        self.contacted_records_by_url[norm] = row_dict
+            # 2. Extract URLs from identified URL columns
+            found_urls = set()
+            for u_col in url_cols:
+                if u_col in row and pd.notna(row[u_col]):
+                    val_str = str(row[u_col]).strip()
+                    norm = normalize_url(val_str)
+                    if norm:
+                        found_urls.add(norm)
+
+            # 3. Fallback: scan all cells in row for URLs
+            for val in row_dict.values():
+                for match in url_pattern.findall(val):
+                    norm = normalize_url(match)
+                    if norm:
+                        found_urls.add(norm)
+
+            for norm in found_urls:
+                self.contacted_urls.add(norm)
+                if norm not in self.contacted_records_by_url:
+                    self.contacted_records_by_url[norm] = row_dict
 
     def get_contacted_match(self, candidate: dict[str, Any]) -> dict[str, Any] | None:
         """Return match details and recruiter metadata if candidate matches contacted store."""
