@@ -30,7 +30,7 @@ export default function AuthPage({ onSignIn, authError }) {
             label="Email or Username"
             value={email}
             onChange={setEmail}
-            placeholder="osman5411@gmail.com or osman"
+            placeholder="name@company.com"
           />
 
           <InputField
