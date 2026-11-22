@@ -1,5 +1,6 @@
 import io
 import os
+import sqlite3
 import sys
 from pathlib import Path
 import pandas as pd
@@ -12,6 +13,16 @@ sys.path.insert(0, str(BACKEND_DIR))
 import core.config
 from main import app
 from core.auth import get_current_user
+
+
+def _make_sqlite_user_row():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    row = conn.execute(
+        "SELECT 1 AS id, 'test@example.com' AS email, 'Test Admin' AS full_name, 'admin' AS role"
+    ).fetchone()
+    conn.close()
+    return row
 
 
 @pytest.fixture
@@ -27,12 +38,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(core.config, "COMPARISON_REPORT_CSV", analysis_dir / "contacted_hr_vs_ai_comparison.csv")
     monkeypatch.delenv("CONTACTED_CANDIDATES_PATH", raising=False)
 
-    app.dependency_overrides[get_current_user] = lambda: {
-        "id": 1,
-        "email": "test@example.com",
-        "full_name": "Test Admin",
-        "role": "admin",
-    }
+    app.dependency_overrides[get_current_user] = _make_sqlite_user_row
     c = TestClient(app)
     yield c
     app.dependency_overrides.clear()
@@ -67,6 +73,17 @@ def test_contacted_settings_lifecycle(client, tmp_path):
     assert upload_data["total_names"] == 2
     assert "contacted_candidates.xlsx" in upload_data["filename"]
     assert "CONTACTED_CANDIDATES_PATH" in os.environ
+    assert upload_data["latest_log"] is not None
+    assert upload_data["latest_log"]["performed_by_email"] == "test@example.com"
+    assert upload_data["latest_log"]["total_names"] == 2
+
+    # Verify log appears in logs endpoint
+    logs_res = client.get("/api/settings/contacted-candidates/logs")
+    assert logs_res.status_code == 200
+    logs_data = logs_res.json()
+    assert len(logs_data) >= 1
+    assert logs_data[0]["filename"] == "contacted.xlsx"
+    assert logs_data[0]["performed_by_email"] == "test@example.com"
 
     # 3. Download the uploaded file
     dl_res = client.get("/api/settings/contacted-candidates/download")

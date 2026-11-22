@@ -1,5 +1,6 @@
 import sys
 import os
+import time
 import logging
 from pathlib import Path
 from fastapi import HTTPException
@@ -330,6 +331,21 @@ def get_contacted_candidates_status() -> dict:
     }
 
 
+def _extract_user_audit_info(current_user) -> tuple[int | None, str, str]:
+    """Safely extract (user_id, email, full_name) from either a sqlite3.Row or dict."""
+    if not current_user:
+        return None, "admin@hr.local", "Admin"
+    user_dict = dict(current_user) if not isinstance(current_user, dict) else current_user
+    u_id = user_dict.get("id")
+    u_email = user_dict.get("email") or "admin@hr.local"
+    u_name = (
+        user_dict.get("full_name")
+        or user_dict.get("name")
+        or (u_email.split("@")[0] if u_email else "Admin")
+    )
+    return u_id, u_email, u_name
+
+
 def save_global_contacted_file(file_obj, filename: str, current_user=None) -> dict:
     """Safely write an uploaded Excel or CSV contacted candidates list and record audit log."""
     import re
@@ -404,13 +420,7 @@ def save_global_contacted_file(file_obj, filename: str, current_user=None) -> di
     # Record persistent update log in SQLite
     try:
         conn = get_connection()
-        u_id = current_user.get("id") if current_user else None
-        u_email = current_user.get("email") if current_user else "admin@hr.local"
-        u_name = (
-            current_user.get("full_name")
-            or current_user.get("name")
-            or (u_email.split("@")[0] if u_email else "Admin")
-        )
+        u_id, u_email, u_name = _extract_user_audit_info(current_user)
         now_iso = utc_now()
         details = (
             f"{'Replaced list with' if action == 'replace' else 'Uploaded'} '{raw_name}'. "
@@ -459,13 +469,7 @@ def delete_global_contacted_file(current_user=None) -> dict:
     if removed:
         try:
             conn = get_connection()
-            u_id = current_user.get("id") if current_user else None
-            u_email = current_user.get("email") if current_user else "admin@hr.local"
-            u_name = (
-                current_user.get("full_name")
-                or current_user.get("name")
-                or (u_email.split("@")[0] if u_email else "Admin")
-            )
+            u_id, u_email, u_name = _extract_user_audit_info(current_user)
             now_iso = utc_now()
             conn.execute("""
                 INSERT INTO contacted_candidates_logs (
