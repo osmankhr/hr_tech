@@ -152,6 +152,14 @@ app.add_middleware(
 )
 
 
+@app.middleware("http")
+async def strip_hr_prefix_middleware(request, call_next):
+    """Support local direct execution where /hr/api requests might not be stripped by nginx."""
+    if request.url.path.startswith("/hr/api"):
+        request.scope["path"] = request.url.path[3:]  # removes '/hr'
+    return await call_next(request)
+
+
 # Mount Modular Feature Routers
 app.include_router(auth_router)
 app.include_router(campaigns_router)
@@ -160,7 +168,7 @@ app.include_router(pipeline_router)
 app.include_router(settings_router)
 
 # Mount Frontend SPA Dist (Fallback Catch-All)
-# nginx strips the public /hr prefix before proxying here, so this serves the
-# built frontend at the app root both in production and in local development.
+# Both /hr and / are mounted so the app works seamlessly in local dev without nginx.
 if FRONTEND_DIST.is_dir():
+    app.mount("/hr", StaticFiles(directory=str(FRONTEND_DIST), html=True), name="frontend_hr")
     app.mount("/", StaticFiles(directory=str(FRONTEND_DIST), html=True), name="frontend")

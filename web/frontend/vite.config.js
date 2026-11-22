@@ -5,4 +5,14 @@ import tailwindcss from "@tailwindcss/vite";
 export default defineConfig({
   base: "/hr/",
   plugins: [react(), tailwindcss()],
+  server: {
+    port: 5173,
+    proxy: {
+      "/api": "http://127.0.0.1:8000",
+      "/hr/api": {
+        target: "http://127.0.0.1:8000",
+        rewrite: (path) => path.replace(/^\/hr\/api/, "/api"),
+      },
+    },
+  },
 });
