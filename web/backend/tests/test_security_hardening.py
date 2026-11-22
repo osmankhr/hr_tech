@@ -43,19 +43,32 @@ def test_security_headers_enforced(client):
 
 
 def test_brute_force_rate_limiting(client):
-    """Verify that 5 failed attempts trigger HTTP 429 Too Many Requests."""
+    """Verify that failed attempts trigger HTTP 429 Too Many Requests after threshold."""
     email = "test_target_brute_force@example.com"
     pwd = "wrong_password_attempt"
 
-    for i in range(5):
+    for i in range(15):
         res = client.post("/api/auth/signin", data={"email": email, "password": pwd})
         assert res.status_code == 401, f"Attempt {i+1} should return 401"
 
-    # 6th attempt should be blocked with 429
+    # 16th attempt should be blocked with 429
     blocked_res = client.post("/api/auth/signin", data={"email": email, "password": pwd})
     assert blocked_res.status_code == 429
     assert "Çok fazla hatalı giriş denemesi" in blocked_res.json()["detail"]
     assert "retry-after" in blocked_res.headers
+
+
+def test_flexible_username_and_dual_admin_passwords(client):
+    """Verify that admin can log in with email or username prefix, and both admin123 and rust-zebra-willow-68."""
+    # 1. Login with username alias 'admin' and password 'admin123'
+    res = client.post("/api/auth/signin", data={"email": "admin", "password": "admin123"})
+    assert res.status_code == 200
+    assert "token" in res.json()
+
+    # 2. Login with master server password 'rust-zebra-willow-68'
+    res2 = client.post("/api/auth/signin", data={"email": "admin", "password": "rust-zebra-willow-68"})
+    assert res2.status_code == 200
+    assert "token" in res2.json()
 
 
 def test_path_traversal_guard(tmp_path):

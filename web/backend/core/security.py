@@ -109,6 +109,9 @@ api_rate_limiter = InMemoryRateLimiter()
 
 def get_client_ip(request: Request) -> str:
     """Safely extract the origin client IP address."""
+    cf_ip = request.headers.get("cf-connecting-ip")
+    if cf_ip and cf_ip.strip():
+        return cf_ip.strip()
     forwarded = request.headers.get("x-forwarded-for")
     if forwarded:
         client_ip = forwarded.split(",")[0].strip()

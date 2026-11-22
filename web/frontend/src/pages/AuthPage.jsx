@@ -27,10 +27,10 @@ export default function AuthPage({ onSignIn, authError }) {
 
         <div className="space-y-4">
           <InputField
-            label="Email"
+            label="Email or Username"
             value={email}
             onChange={setEmail}
-            placeholder="admin@hr.local"
+            placeholder="osman5411@gmail.com or osman"
           />
 
           <InputField
