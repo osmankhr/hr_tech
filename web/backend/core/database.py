@@ -107,10 +107,26 @@ def ensure_pipeline_tables():
             FOREIGN KEY (created_by_user_id) REFERENCES users(id) ON DELETE SET NULL
         );
 
+        CREATE TABLE IF NOT EXISTS contacted_candidates_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            action TEXT NOT NULL CHECK(action IN ('upload', 'replace', 'delete')),
+            filename TEXT,
+            file_size_bytes INTEGER DEFAULT 0,
+            total_names INTEGER DEFAULT 0,
+            total_urls INTEGER DEFAULT 0,
+            performed_by_user_id INTEGER,
+            performed_by_email TEXT,
+            performed_by_name TEXT,
+            details TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (performed_by_user_id) REFERENCES users(id) ON DELETE SET NULL
+        );
+
         CREATE INDEX IF NOT EXISTS idx_pipeline_runs_campaign ON pipeline_runs(campaign_id, started_at DESC);
         CREATE INDEX IF NOT EXISTS idx_candidate_rankings_campaign ON candidate_rankings(campaign_id, rank ASC);
         CREATE INDEX IF NOT EXISTS idx_pipeline_campaign_templates_owner ON pipeline_campaign_templates(created_by_user_id, created_at DESC);
         CREATE INDEX IF NOT EXISTS idx_pipeline_config_versions_campaign ON pipeline_config_versions(campaign_id, version_number DESC);
+        CREATE INDEX IF NOT EXISTS idx_contacted_candidates_logs_date ON contacted_candidates_logs(created_at DESC);
     """)
 
     # One-time backfill: every campaign configured before pipeline_config_versions existed gets

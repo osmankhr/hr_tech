@@ -5,6 +5,8 @@ from pathlib import Path
 from fastapi import HTTPException
 import core.config
 from core.config import ALLOWED_INTEGRATION_ENV_KEYS
+from core.database import get_connection
+from auth_utils import utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -173,17 +175,100 @@ def _get_global_contacted_file() -> Path | None:
     return None
 
 
+def get_contacted_candidates_logs() -> list[dict]:
+    """Return chronological history of contacted candidates list updates."""
+    conn = get_connection()
+    try:
+        rows = conn.execute("""
+            SELECT 
+                id, action, filename, file_size_bytes, total_names, total_urls,
+                performed_by_user_id, performed_by_email, performed_by_name,
+                details, created_at
+            FROM contacted_candidates_logs
+            ORDER BY created_at DESC, id DESC
+            LIMIT 100
+        """).fetchall()
+        result = [dict(r) for r in rows]
+        if not result:
+            file_path = _get_global_contacted_file()
+            if file_path and file_path.exists():
+                from datetime import datetime, timezone
+                stat = file_path.stat()
+                file_mtime_iso = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat()
+                total_names = 0
+                total_urls = 0
+                try:
+                    scripts_dir = str(core.config.CANDIDATE_POOL_ROOT / "scripts")
+                    if scripts_dir not in sys.path:
+                        sys.path.insert(0, scripts_dir)
+                    from contacted_candidates import ContactedCandidatesStore
+                    store = ContactedCandidatesStore(file_path)
+                    total_names = len(store.contacted_names)
+                    total_urls = len(store.contacted_urls)
+                except Exception:
+                    pass
+
+                conn.execute("""
+                    INSERT INTO contacted_candidates_logs (
+                        action, filename, file_size_bytes, total_names, total_urls,
+                        performed_by_user_id, performed_by_email, performed_by_name,
+                        details, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    "upload", file_path.name, stat.st_size, total_names, total_urls,
+                    None, "admin@hr.local", "System Admin",
+                    f"Active contacted candidates list '{file_path.name}'.", file_mtime_iso
+                ))
+                conn.commit()
+                rows = conn.execute("""
+                    SELECT 
+                        id, action, filename, file_size_bytes, total_names, total_urls,
+                        performed_by_user_id, performed_by_email, performed_by_name,
+                        details, created_at
+                    FROM contacted_candidates_logs
+                    ORDER BY created_at DESC, id DESC
+                    LIMIT 100
+                """).fetchall()
+                result = [dict(r) for r in rows]
+        return result
+    except Exception as e:
+        logger.warning("Could not fetch contacted candidates logs: %s", e)
+        return []
+    finally:
+        conn.close()
+
+
 def get_contacted_candidates_status() -> dict:
     """Return status and metadata about the company-wide contacted candidates list."""
     from datetime import datetime, timezone
 
     file_path = _get_global_contacted_file()
+
+    # Query latest update log from database
+    latest_log = None
+    try:
+        conn = get_connection()
+        row = conn.execute("""
+            SELECT 
+                id, action, filename, file_size_bytes, total_names, total_urls,
+                performed_by_user_id, performed_by_email, performed_by_name,
+                details, created_at
+            FROM contacted_candidates_logs
+            ORDER BY created_at DESC, id DESC
+            LIMIT 1
+        """).fetchone()
+        if row:
+            latest_log = dict(row)
+        conn.close()
+    except Exception as e:
+        logger.warning("Could not query latest contacted log: %s", e)
+
     if not file_path:
         return {
             "configured": False,
             "filename": None,
             "file_size_bytes": 0,
-            "updated_at": None,
+            "updated_at": latest_log["created_at"] if latest_log else None,
             "total_names": 0,
             "total_urls": 0,
             "comparison_report_available": core.config.COMPARISON_REPORT_XLSX.exists(),
@@ -192,6 +277,7 @@ def get_contacted_candidates_status() -> dict:
                 if core.config.COMPARISON_REPORT_XLSX.exists()
                 else None
             ),
+            "latest_log": latest_log,
         }
 
     total_names = 0
@@ -209,11 +295,26 @@ def get_contacted_candidates_status() -> dict:
         logger.warning("Could not parse contacted file %s: %s", file_path, e)
 
     stat = file_path.stat()
+    file_mtime_iso = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat()
+
+    if not latest_log or latest_log.get("action") == "delete":
+        latest_log = {
+            "action": "upload",
+            "filename": file_path.name,
+            "file_size_bytes": stat.st_size,
+            "total_names": total_names,
+            "total_urls": total_urls,
+            "performed_by_name": "System Admin",
+            "performed_by_email": "admin@hr.local",
+            "details": "Active contacted candidates list",
+            "created_at": file_mtime_iso,
+        }
+
     return {
         "configured": True,
         "filename": file_path.name,
         "file_size_bytes": stat.st_size,
-        "updated_at": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
+        "updated_at": latest_log.get("created_at") or file_mtime_iso,
         "total_names": total_names,
         "total_urls": total_urls,
         "comparison_report_available": core.config.COMPARISON_REPORT_XLSX.exists(),
@@ -222,16 +323,20 @@ def get_contacted_candidates_status() -> dict:
             if core.config.COMPARISON_REPORT_XLSX.exists()
             else None
         ),
+        "latest_log": latest_log,
     }
 
 
-def save_global_contacted_file(file_obj, filename: str) -> dict:
-    """Safely write an uploaded Excel or CSV contacted candidates list."""
+def save_global_contacted_file(file_obj, filename: str, current_user=None) -> dict:
+    """Safely write an uploaded Excel or CSV contacted candidates list and record audit log."""
     import re
     from fastapi import UploadFile
 
     if not filename:
         raise HTTPException(status_code=400, detail="Missing filename")
+
+    previous_file = _get_global_contacted_file()
+    action = "replace" if previous_file else "upload"
 
     raw_name = Path(filename).name
     safe_name = re.sub(r"[^a-zA-Z0-9._-]", "_", raw_name)
@@ -292,11 +397,45 @@ def save_global_contacted_file(file_obj, filename: str) -> dict:
 
     # Set environment variable so every campaign pipeline execution uses it
     os.environ["CONTACTED_CANDIDATES_PATH"] = str(target_path)
+
+    # Record persistent update log in SQLite
+    try:
+        conn = get_connection()
+        u_id = current_user.get("id") if current_user else None
+        u_email = current_user.get("email") if current_user else "admin@hr.local"
+        u_name = (
+            current_user.get("full_name")
+            or current_user.get("name")
+            or (u_email.split("@")[0] if u_email else "Admin")
+        )
+        now_iso = utc_now()
+        details = (
+            f"{'Replaced list with' if action == 'replace' else 'Uploaded'} '{raw_name}'. "
+            f"Indexed {len(store.contacted_names)} candidate names and {len(store.contacted_urls)} profile URLs."
+        )
+        conn.execute("""
+            INSERT INTO contacted_candidates_logs (
+                action, filename, file_size_bytes, total_names, total_urls,
+                performed_by_user_id, performed_by_email, performed_by_name,
+                details, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            action, raw_name, size, len(store.contacted_names), len(store.contacted_urls),
+            u_id, u_email, u_name, details, now_iso
+        ))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.exception("Could not record contacted candidates log: %s", e)
+
     return get_contacted_candidates_status()
 
 
-def delete_global_contacted_file() -> dict:
-    """Remove all global contacted candidates spreadsheets."""
+def delete_global_contacted_file(current_user=None) -> dict:
+    """Remove all global contacted candidates spreadsheets and record delete log."""
+    previous_file = _get_global_contacted_file()
+    deleted_filename = previous_file.name if previous_file else "contacted_candidates.xlsx"
+
     removed = False
     for ext in (".xlsx", ".xls", ".csv"):
         p = core.config.GLOBAL_CONTACTED_DIR / f"contacted_candidates{ext}"
@@ -304,5 +443,33 @@ def delete_global_contacted_file() -> dict:
             p.unlink(missing_ok=True)
             removed = True
     os.environ.pop("CONTACTED_CANDIDATES_PATH", None)
+
+    # Record deletion log in SQLite
+    if removed:
+        try:
+            conn = get_connection()
+            u_id = current_user.get("id") if current_user else None
+            u_email = current_user.get("email") if current_user else "admin@hr.local"
+            u_name = (
+                current_user.get("full_name")
+                or current_user.get("name")
+                or (u_email.split("@")[0] if u_email else "Admin")
+            )
+            now_iso = utc_now()
+            conn.execute("""
+                INSERT INTO contacted_candidates_logs (
+                    action, filename, file_size_bytes, total_names, total_urls,
+                    performed_by_user_id, performed_by_email, performed_by_name,
+                    details, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                "delete", deleted_filename, 0, 0, 0,
+                u_id, u_email, u_name, f"Contacted list '{deleted_filename}' removed.", now_iso
+            ))
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            logger.exception("Could not record contacted candidates delete log: %s", e)
+
     return get_contacted_candidates_status()
 

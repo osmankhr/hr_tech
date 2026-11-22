@@ -17,6 +17,7 @@ from services.settings_service import (
     get_contacted_candidates_status,
     save_global_contacted_file,
     delete_global_contacted_file,
+    get_contacted_candidates_logs,
 )
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
@@ -81,6 +82,12 @@ def get_contacted_candidates(current_user=Depends(get_current_user)):
     return get_contacted_candidates_status()
 
 
+@router.get("/contacted-candidates/logs")
+def get_contacted_candidates_history(current_user=Depends(get_current_user)):
+    """Return chronological history of updates, replacements, and deletions for contacted candidates."""
+    return get_contacted_candidates_logs()
+
+
 @router.post("/contacted-candidates")
 def upload_contacted_candidates(
     file: UploadFile = File(...),
@@ -89,13 +96,13 @@ def upload_contacted_candidates(
     """Upload and activate a company-wide contacted candidates Excel (.xlsx/.xls) or CSV."""
     if not file or not file.filename:
         raise HTTPException(status_code=400, detail="No file uploaded")
-    return save_global_contacted_file(file.file, file.filename)
+    return save_global_contacted_file(file.file, file.filename, current_user=current_user)
 
 
 @router.delete("/contacted-candidates")
 def delete_contacted_candidates(current_user=Depends(get_current_user)):
     """Remove the active company-wide contacted candidates list."""
-    return delete_global_contacted_file()
+    return delete_global_contacted_file(current_user=current_user)
 
 
 @router.get("/contacted-candidates/download")

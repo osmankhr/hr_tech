@@ -3,6 +3,38 @@ import { campaignApi } from "../../api/campaignApi";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
+import { Modal } from "../../components/ui/Modal";
+
+function formatDateTime(dateStr) {
+  if (!dateStr) return "—";
+  try {
+    const d = new Date(dateStr);
+    if (isNaN(d.getTime())) return dateStr;
+    return d.toLocaleString("tr-TR", {
+      year: "numeric",
+      month: "long",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+  } catch {
+    return dateStr;
+  }
+}
+
+function getActionBadge(action) {
+  switch (action) {
+    case "upload":
+      return <Badge tone="green">Yeni Yükleme</Badge>;
+    case "replace":
+      return <Badge tone="brand">Liste Güncelleme</Badge>;
+    case "delete":
+      return <Badge tone="red">Silme</Badge>;
+    default:
+      return <Badge tone="gray">{action || "İşlem"}</Badge>;
+  }
+}
 
 /**
  * Platform & API Settings panel for configuring Kaggle, GitHub, Hugging Face,
@@ -25,6 +57,11 @@ export function PlatformSettingsPanel() {
   const [contactedUploading, setContactedUploading] = useState(false);
   const [contactedError, setContactedError] = useState("");
   const [contactedMessage, setContactedMessage] = useState("");
+
+  const [showLogsModal, setShowLogsModal] = useState(false);
+  const [contactedLogs, setContactedLogs] = useState([]);
+  const [logsLoading, setLogsLoading] = useState(false);
+  const [logsError, setLogsError] = useState("");
 
   const [form, setForm] = useState({
     KAGGLE_API_TOKEN: "",
@@ -175,6 +212,20 @@ export function PlatformSettingsPanel() {
     }
   };
 
+  const handleOpenLogs = async () => {
+    setShowLogsModal(true);
+    setLogsLoading(true);
+    setLogsError("");
+    try {
+      const data = await campaignApi.getContactedCandidatesLogs();
+      setContactedLogs(Array.isArray(data) ? data : []);
+    } catch (err) {
+      setLogsError(err.message || "Güncelleme logları yüklenirken hata oluştu.");
+    } finally {
+      setLogsLoading(false);
+    }
+  };
+
   const handleContactedUpload = async (event) => {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -187,6 +238,8 @@ export function PlatformSettingsPanel() {
       setContactedMessage(
         `Successfully uploaded "${file.name}". Indexed ${res.total_names} candidate names and ${res.total_urls} profile URLs across all campaigns.`
       );
+      // Refresh logs if modal is open or for cache
+      campaignApi.getContactedCandidatesLogs().then((d) => setContactedLogs(Array.isArray(d) ? d : [])).catch(() => {});
     } catch (err) {
       setContactedError(err.message || "Failed to upload contacted candidates file.");
     } finally {
@@ -206,6 +259,8 @@ export function PlatformSettingsPanel() {
       const res = await campaignApi.deleteContactedCandidates();
       setContactedStatus(res);
       setContactedMessage("Company contacted candidates list removed.");
+      // Refresh logs
+      campaignApi.getContactedCandidatesLogs().then((d) => setContactedLogs(Array.isArray(d) ? d : [])).catch(() => {});
     } catch (err) {
       setContactedError(err.message || "Could not remove contacted candidates list.");
     } finally {
@@ -238,19 +293,42 @@ export function PlatformSettingsPanel() {
       <Card className="p-5">
         <div className="mb-4 flex flex-wrap items-start justify-between gap-4">
           <div>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <h3 className="text-base font-semibold text-slate-900">
                 Company Contacted Candidates
               </h3>
               <Badge tone={contactedStatus?.configured ? "green" : "amber"}>
                 {contactedStatus?.configured ? "Active Across All Campaigns" : "No List Uploaded"}
               </Badge>
+              {contactedStatus?.updated_at && (
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-slate-100 border border-slate-300 px-3 py-1 text-xs font-medium text-slate-700">
+                  <span className="h-2 w-2 rounded-full bg-emerald-500"></span>
+                  <span>Son Güncelleme: <strong className="text-slate-900">{formatDateTime(contactedStatus.updated_at)}</strong></span>
+                  {contactedStatus?.latest_log?.performed_by_name && (
+                    <span className="text-slate-500 font-normal">
+                      ({contactedStatus.latest_log.performed_by_name})
+                    </span>
+                  )}
+                </span>
+              )}
             </div>
-            <p className="mt-1 text-sm text-slate-500">
+            <p className="mt-1.5 text-sm text-slate-500">
               Upload your company-wide Excel (<code>.xlsx</code>, <code>.xls</code>) or <code>.csv</code> list of contacted candidates.
               The search pipeline automatically eliminates these candidates across all campaigns, replenishes the pool with fresh profiles,
               and evaluates them independently so HR can compare system reviews against recruiter decisions.
             </p>
+          </div>
+          <div>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={handleOpenLogs}
+              className="flex items-center gap-1.5 border-slate-300 text-slate-700 hover:bg-slate-100"
+            >
+              <span>📜</span>
+              <span>Güncelleme Logları</span>
+            </Button>
           </div>
         </div>
 
@@ -293,18 +371,35 @@ export function PlatformSettingsPanel() {
                 </p>
               </div>
 
-              <div className="rounded-xl border border-slate-200 bg-slate-50 p-3.5">
-                <span className="text-xs font-semibold text-slate-800">Last Updated</span>
-                <p className="mt-1 text-sm font-medium text-slate-900">
-                  {contactedStatus?.updated_at
-                    ? new Date(contactedStatus.updated_at).toLocaleDateString()
-                    : "—"}
-                </p>
-                <p className="mt-0.5 text-xs text-slate-500">
-                  {contactedStatus?.file_size_bytes
-                    ? `${(contactedStatus.file_size_bytes / 1024).toFixed(1)} KB`
-                    : "—"}
-                </p>
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-3.5 flex flex-col justify-between">
+                <div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-semibold text-slate-800">Last Updated</span>
+                    <button
+                      type="button"
+                      onClick={handleOpenLogs}
+                      className="text-xs font-medium text-indigo-600 hover:text-indigo-800 hover:underline"
+                    >
+                      Logları Gör &rarr;
+                    </button>
+                  </div>
+                  <p className="mt-1 text-sm font-semibold text-slate-900">
+                    {formatDateTime(contactedStatus?.updated_at)}
+                  </p>
+                  <p className="mt-0.5 text-xs text-slate-500">
+                    {contactedStatus?.latest_log?.performed_by_name
+                      ? `Yapan: ${contactedStatus.latest_log.performed_by_name}`
+                      : contactedStatus?.file_size_bytes
+                      ? `${(contactedStatus.file_size_bytes / 1024).toFixed(1)} KB`
+                      : "—"}
+                  </p>
+                </div>
+                {contactedStatus?.latest_log?.action && (
+                  <div className="mt-2 text-[11px] text-slate-500">
+                    İşlem: <span className="font-medium text-slate-700 capitalize">{contactedStatus.latest_log.action}</span>
+                    {contactedStatus.latest_log.filename ? ` (${contactedStatus.latest_log.filename})` : ""}
+                  </div>
+                )}
               </div>
 
               <div className="rounded-xl border border-slate-200 bg-slate-50 p-3.5">
@@ -361,6 +456,16 @@ export function PlatformSettingsPanel() {
                     </Button>
                   </>
                 )}
+
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={handleOpenLogs}
+                  className="flex items-center gap-1.5 border-slate-300 text-slate-700 hover:bg-slate-100"
+                >
+                  <span>📜</span>
+                  <span>Güncelleme Logları</span>
+                </Button>
 
                 {contactedStatus?.comparison_report_available && (
                   <Button
@@ -722,6 +827,125 @@ export function PlatformSettingsPanel() {
           </div>
         </form>
       </Card>
+
+      {/* Contacted Candidates Audit Logs Modal */}
+      {showLogsModal && (
+        <Modal
+          title="Company Contacted Candidates - Güncelleme Tarihçesi ve Logları"
+          onClose={() => setShowLogsModal(false)}
+          size="max-w-4xl"
+          footer={
+            <Button variant="outline" onClick={() => setShowLogsModal(false)}>
+              Kapat
+            </Button>
+          }
+        >
+          <div className="space-y-4">
+            {/* Summary info banner */}
+            <div className="rounded-xl border border-slate-200 bg-slate-50/80 p-4">
+              <div className="grid gap-3 sm:grid-cols-3 text-xs">
+                <div>
+                  <span className="text-slate-500 font-medium block">Aktif Liste Durumu</span>
+                  <span className="font-semibold text-slate-800 text-sm">
+                    {contactedStatus?.configured ? `Aktif (${contactedStatus.filename})` : "Yüklü Liste Yok"}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-slate-500 font-medium block">En Son Güncelleme Tarihi</span>
+                  <span className="font-semibold text-indigo-700 text-sm">
+                    {formatDateTime(contactedStatus?.updated_at)}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-slate-500 font-medium block">Toplam Log Sayısı</span>
+                  <span className="font-semibold text-slate-800 text-sm">
+                    {contactedLogs.length} kayıtlı işlem
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {logsError && (
+              <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                {logsError}
+              </div>
+            )}
+
+            {logsLoading ? (
+              <div className="py-12 text-center text-sm text-slate-500">
+                <div className="inline-block h-6 w-6 animate-spin rounded-full border-2 border-indigo-600 border-t-transparent mb-2"></div>
+                <p>Güncelleme geçmişi yükleniyor...</p>
+              </div>
+            ) : contactedLogs.length === 0 ? (
+              <div className="py-12 text-center text-sm text-slate-500">
+                <span className="text-3xl block mb-2">📋</span>
+                <p className="font-medium text-slate-700">Henüz bir güncelleme kaydı bulunmuyor.</p>
+                <p className="text-xs text-slate-400 mt-1">
+                  Excel veya CSV formatında aday listesi yüklendiğinde veya güncellendiğinde buraya loglanacaktır.
+                </p>
+              </div>
+            ) : (
+              <div className="overflow-x-auto rounded-xl border border-slate-200">
+                <table className="w-full text-left text-xs text-slate-600">
+                  <thead className="bg-slate-100 text-[11px] font-semibold uppercase tracking-wider text-slate-700">
+                    <tr>
+                      <th className="px-3.5 py-3">Tarih &amp; Saat</th>
+                      <th className="px-3.5 py-3">İşlem</th>
+                      <th className="px-3.5 py-3">Dosya &amp; Boyut</th>
+                      <th className="px-3.5 py-3">Aday / URL</th>
+                      <th className="px-3.5 py-3">İşlemi Yapan</th>
+                      <th className="px-3.5 py-3">Açıklama</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-200 bg-white">
+                    {contactedLogs.map((log) => (
+                      <tr key={log.id} className="hover:bg-slate-50 transition-colors">
+                        <td className="whitespace-nowrap px-3.5 py-3 font-medium text-slate-900">
+                          {formatDateTime(log.created_at)}
+                        </td>
+                        <td className="whitespace-nowrap px-3.5 py-3">
+                          {getActionBadge(log.action)}
+                        </td>
+                        <td className="px-3.5 py-3">
+                          <p className="font-medium text-slate-800 truncate max-w-[150px]" title={log.filename}>
+                            {log.filename || "—"}
+                          </p>
+                          {log.file_size_bytes > 0 && (
+                            <p className="text-[11px] text-slate-400">
+                              {(log.file_size_bytes / 1024).toFixed(1)} KB
+                            </p>
+                          )}
+                        </td>
+                        <td className="whitespace-nowrap px-3.5 py-3">
+                          <span className="font-medium text-slate-800">{log.total_names || 0}</span> aday
+                          <span className="block text-[11px] text-slate-400">
+                            {log.total_urls || 0} profil linki
+                          </span>
+                        </td>
+                        <td className="px-3.5 py-3">
+                          <p className="font-medium text-slate-800">
+                            {log.performed_by_name || "Admin"}
+                          </p>
+                          {log.performed_by_email && (
+                            <p className="text-[11px] text-slate-400 truncate max-w-[140px]" title={log.performed_by_email}>
+                              {log.performed_by_email}
+                            </p>
+                          )}
+                        </td>
+                        <td className="px-3.5 py-3 text-slate-600 max-w-xs">
+                          <p className="line-clamp-2" title={log.details}>
+                            {log.details || "—"}
+                          </p>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </Modal>
+      )}
     </section>
   );
 }

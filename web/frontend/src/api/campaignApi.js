@@ -104,6 +104,10 @@ export const campaignApi = {
     return httpClient.get("/settings/contacted-candidates");
   },
 
+  getContactedCandidatesLogs() {
+    return httpClient.get("/settings/contacted-candidates/logs");
+  },
+
   uploadContactedCandidates(file) {
     const formData = new FormData();
     formData.append("file", file);
