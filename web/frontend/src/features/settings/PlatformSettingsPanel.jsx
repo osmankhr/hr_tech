@@ -895,7 +895,7 @@ export function PlatformSettingsPanel() {
                           {getActionBadge(log.action)}
                         </td>
                         <td className="px-3.5 py-3">
-                          <p className="font-medium text-slate-800 truncate max-w-[150px]" title={log.filename}>
+                          <p className="font-medium text-slate-800 truncate max-w-[240px]" title={log.filename}>
                             {log.filename || "—"}
                           </p>
                           {log.file_size_bytes > 0 && (

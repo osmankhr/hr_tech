@@ -49,14 +49,6 @@ export function Modal({
             {title}
           </h3>
           <div className="flex items-center gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={onClose}
-              className="text-xs font-medium text-slate-600 hover:text-slate-900"
-            >
-              Close
-            </Button>
             <button
               type="button"
               onClick={onClose}

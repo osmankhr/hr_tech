@@ -45,14 +45,14 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
 
         # 7. Content-Security-Policy (CSP)
-        # Allows self, embedded images (data/blob), fonts, and safe inline styling for Tailwind/Vite
+        # Allows self, embedded images (data/blob), fonts, Cloudflare analytics, and safe styling for Tailwind/Vite
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; "
-            "script-src 'self' 'unsafe-inline'; "
+            "script-src 'self' 'unsafe-inline' https://static.cloudflareinsights.com; "
             "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
             "font-src 'self' https://fonts.gstatic.com data:; "
             "img-src 'self' data: blob: https:; "
-            "connect-src 'self' https:; "
+            "connect-src 'self' https: https://cloudflareinsights.com; "
             "frame-ancestors 'self'; "
             "object-src 'none'; "
             "base-uri 'self';"
