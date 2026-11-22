@@ -58,15 +58,15 @@ def test_brute_force_rate_limiting(client):
     assert "retry-after" in blocked_res.headers
 
 
-def test_flexible_username_and_dual_admin_passwords(client):
-    """Verify that admin can log in with email or username prefix, and both admin123 and rust-zebra-willow-68."""
-    # 1. Login with username alias 'admin' and password 'admin123'
+def test_flexible_username_login(client):
+    """Verify that user can log in with full email or username prefix with admin123."""
+    # 1. Login with username alias 'admin'
     res = client.post("/api/auth/signin", data={"email": "admin", "password": "admin123"})
     assert res.status_code == 200
     assert "token" in res.json()
 
-    # 2. Login with master server password 'rust-zebra-willow-68'
-    res2 = client.post("/api/auth/signin", data={"email": "admin", "password": "rust-zebra-willow-68"})
+    # 2. Login with full email 'admin@hr.local'
+    res2 = client.post("/api/auth/signin", data={"email": "admin@hr.local", "password": "admin123"})
     assert res2.status_code == 200
     assert "token" in res2.json()
 

