@@ -1,13 +1,16 @@
 import os
 from fastapi import APIRouter, Depends, HTTPException, Body, UploadFile, File
 from fastapi.responses import FileResponse
+import core.config
 from core.config import (
     CANDIDATE_POOL_ENV_PATH,
     ALLOWED_INTEGRATION_ENV_KEYS,
     COMPARISON_REPORT_XLSX,
     COMPARISON_REPORT_CSV,
+    GLOBAL_CONTACTED_DIR,
 )
 from core.auth import get_current_user
+from core.security import assert_safe_path
 from services.settings_service import (
     _get_candidate_pool_env_path,
     _validate_env_secret_value,
@@ -112,14 +115,16 @@ def download_contacted_candidates(current_user=Depends(get_current_user)):
     if not file_path or not file_path.exists():
         raise HTTPException(status_code=404, detail="No contacted candidates file uploaded")
 
+    safe_file_path = assert_safe_path(file_path, core.config.GLOBAL_CONTACTED_DIR)
+
     media_type = (
         "text/csv"
-        if file_path.suffix.lower() == ".csv"
+        if safe_file_path.suffix.lower() == ".csv"
         else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
     return FileResponse(
-        path=str(file_path),
-        filename=file_path.name,
+        path=str(safe_file_path),
+        filename=safe_file_path.name,
         media_type=media_type,
     )
 

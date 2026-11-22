@@ -1,5 +1,5 @@
 from typing import Optional
-from fastapi import APIRouter, Depends, Form, HTTPException, Header
+from fastapi import APIRouter, Depends, Form, HTTPException, Header, Request
 from auth_utils import (
     hash_password,
     verify_password,
@@ -11,6 +11,11 @@ from auth_utils import (
 )
 from core.database import get_connection
 from core.auth import public_user, get_current_user, require_admin
+from core.security import (
+    login_rate_limiter,
+    get_client_ip,
+    perform_dummy_verification,
+)
 
 router = APIRouter(tags=["auth"])
 
@@ -73,19 +78,42 @@ def create_user(
 
 @router.post("/api/auth/signin")
 def signin(
+    request: Request,
     email: str = Form(...),
     password: str = Form(...),
 ):
+    client_ip = get_client_ip(request)
+    normalized_email = email.lower().strip()
+    ip_key = f"ip:{client_ip}"
+    account_key = f"account:{normalized_email}"
+
+    # Brute-force protection: Max 5 failed attempts per 5 minutes per IP or account
+    if login_rate_limiter.is_rate_limited(ip_key, max_attempts=5, window_seconds=300) or \
+       login_rate_limiter.is_rate_limited(account_key, max_attempts=5, window_seconds=300):
+        retry_after = max(
+            login_rate_limiter.get_retry_after(ip_key, window_seconds=300),
+            login_rate_limiter.get_retry_after(account_key, window_seconds=300),
+        )
+        raise HTTPException(
+            status_code=429,
+            detail=f"Çok fazla hatalı giriş denemesi yapıldı. Güvenliğiniz için lütfen {retry_after} saniye sonra tekrar deneyin.",
+            headers={"Retry-After": str(retry_after)},
+        )
+
     conn = get_connection()
 
     user = conn.execute("""
         SELECT *
         FROM users
         WHERE email = ?
-    """, (email.lower().strip(),)).fetchone()
+    """, (normalized_email,)).fetchone()
 
     if not user:
         conn.close()
+        # Record failed attempt and perform constant-time dummy verification
+        login_rate_limiter.record_attempt(ip_key, window_seconds=300)
+        login_rate_limiter.record_attempt(account_key, window_seconds=300)
+        perform_dummy_verification(password)
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
     if user["is_active"] != 1:
@@ -101,7 +129,13 @@ def signin(
 
     if not password_ok:
         conn.close()
+        login_rate_limiter.record_attempt(ip_key, window_seconds=300)
+        login_rate_limiter.record_attempt(account_key, window_seconds=300)
         raise HTTPException(status_code=401, detail="Invalid email or password")
+
+    # Reset failed attempts counters on successful login
+    login_rate_limiter.reset(ip_key)
+    login_rate_limiter.reset(account_key)
 
     raw_token = create_raw_token()
     token_hash_value = hash_token(raw_token)

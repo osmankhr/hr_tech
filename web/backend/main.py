@@ -1,8 +1,10 @@
 import logging
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, status
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 # Core modules
 from core.config import (
@@ -30,6 +32,7 @@ from core.auth import (
     _get_current_user_from_raw_token,
     _get_owned_campaign,
 )
+from core.security import SecurityHeadersMiddleware
 
 # Services
 from services.campaign_service import (
@@ -142,6 +145,9 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Security Hardening: Enforce OWASP security headers (X-Content-Type-Options, CSP, HSTS, X-Frame-Options)
+app.add_middleware(SecurityHeadersMiddleware)
+
 # Cross-Origin Resource Sharing (CORS)
 app.add_middleware(
     CORSMiddleware,
@@ -150,6 +156,22 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """Prevent internal server details or stack traces from leaking to clients."""
+    if isinstance(exc, StarletteHTTPException):
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"detail": exc.detail},
+            headers=getattr(exc, "headers", None),
+        )
+    logger.exception("Unhandled server exception on %s %s: %s", request.method, request.url.path, exc)
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content={"detail": "An internal server error occurred. Please try again later."},
+    )
 
 
 @app.middleware("http")

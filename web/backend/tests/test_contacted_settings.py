@@ -72,6 +72,7 @@ def test_contacted_settings_lifecycle(client, tmp_path):
     dl_res = client.get("/api/settings/contacted-candidates/download")
     assert dl_res.status_code == 200
     assert len(dl_res.content) > 0
+    dl_res.close()
 
     # 4. Delete the file
     del_res = client.delete("/api/settings/contacted-candidates")

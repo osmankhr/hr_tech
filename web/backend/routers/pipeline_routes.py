@@ -20,6 +20,7 @@ from core.auth import (
     _get_owned_campaign,
     get_current_user,
 )
+from core.security import assert_safe_path
 from core.config import (
     CANDIDATE_POOL_CAMPAIGNS_DIR,
     CANDIDATE_POOL_ROOT,
@@ -76,7 +77,11 @@ def _resolve_pipeline_dir(conn, campaign_id: int, current_user) -> Path:
             detail="No pipeline config found. Save pipeline config first.",
         )
 
-    return Path(pipeline_dir)
+    return assert_safe_path(
+        Path(pipeline_dir),
+        CANDIDATE_POOL_CAMPAIGNS_DIR,
+        error_msg="Invalid pipeline directory access",
+    )
 
 
 def _resolve_ranked_results_artifact(

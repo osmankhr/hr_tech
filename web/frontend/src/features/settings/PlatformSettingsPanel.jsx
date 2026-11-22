@@ -318,18 +318,6 @@ export function PlatformSettingsPanel() {
               and evaluates them independently so HR can compare system reviews against recruiter decisions.
             </p>
           </div>
-          <div>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={handleOpenLogs}
-              className="flex items-center gap-1.5 border-slate-300 text-slate-700 hover:bg-slate-100"
-            >
-              <span>📜</span>
-              <span>Güncelleme Logları</span>
-            </Button>
-          </div>
         </div>
 
         {contactedError && (

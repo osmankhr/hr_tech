@@ -158,9 +158,12 @@ def _get_global_contacted_file() -> Path | None:
     """Locate the current global contacted candidates spreadsheet if present."""
     env_path = os.environ.get("CONTACTED_CANDIDATES_PATH")
     if env_path:
-        p = Path(env_path).resolve()
-        if p.exists() and p.is_file():
-            return p
+        try:
+            p = Path(env_path).resolve()
+            if p.exists() and p.is_file() and p.is_relative_to(core.config.GLOBAL_CONTACTED_DIR.resolve()):
+                return p
+        except Exception:
+            pass
 
     candidates = [
         core.config.GLOBAL_CONTACTED_DIR / "contacted_candidates.xlsx",
@@ -437,11 +440,19 @@ def delete_global_contacted_file(current_user=None) -> dict:
     deleted_filename = previous_file.name if previous_file else "contacted_candidates.xlsx"
 
     removed = False
+    import gc
+    gc.collect()
     for ext in (".xlsx", ".xls", ".csv"):
         p = core.config.GLOBAL_CONTACTED_DIR / f"contacted_candidates{ext}"
         if p.exists():
-            p.unlink(missing_ok=True)
-            removed = True
+            try:
+                p.unlink(missing_ok=True)
+                removed = True
+            except PermissionError:
+                gc.collect()
+                time.sleep(0.05)
+                p.unlink(missing_ok=True)
+                removed = True
     os.environ.pop("CONTACTED_CANDIDATES_PATH", None)
 
     # Record deletion log in SQLite
