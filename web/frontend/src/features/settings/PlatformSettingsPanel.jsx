@@ -833,7 +833,7 @@ export function PlatformSettingsPanel() {
         <Modal
           title="Company Contacted Candidates - Güncelleme Tarihçesi ve Logları"
           onClose={() => setShowLogsModal(false)}
-          size="max-w-4xl"
+          size="max-w-5xl"
           footer={
             <Button variant="outline" onClick={() => setShowLogsModal(false)}>
               Kapat
