@@ -38,6 +38,21 @@ NOTIFY_TO = [a.strip() for a in os.environ.get("NOTIFY_TO", "").split(",") if a.
 # Helpers
 # ---------------------------------------------------------------------------
 
+# The scraper/analysis covers many universities, but the email digest only
+# lists these top universities (the original target list).
+EMAIL_UNIVERSITIES = {
+    "Boğaziçi University",
+    "Istanbul Technical University",
+    "Middle East Technical University",
+    "Bilkent University",
+    "Sabancı University",
+    "Koç University",
+    "Hacettepe University",
+    "Yıldız Technical University",
+    "Istanbul University",
+    "Izmir Institute of Technology",
+}
+
 def _latest_new_authors_file(base: str = ".") -> str | None:
     pat = re.compile(r"^new_authors_(\d{8})\.csv$")
     data_path = os.path.join(base, "data")
@@ -144,6 +159,8 @@ if __name__ == "__main__":
     path = _latest_new_authors_file(".")
     if not path:
         raise SystemExit("No data/new_authors_YYYYMMDD.csv file found.")
-    rows = _load_new_authors(path)
-    print(f"Loaded {len(rows)} new authors from {path}")
+    all_rows = _load_new_authors(path)
+    rows = [r for r in all_rows if r.get("university") in EMAIL_UNIVERSITIES]
+    print(f"Loaded {len(all_rows)} new authors from {path}; "
+          f"{len(rows)} from top universities will be emailed")
     send(rows, path)
