@@ -73,12 +73,94 @@ def resolve_comparison_report_path(
 
 
 def _find_field(record: dict[str, Any], aliases: list[str]) -> str:
-    """Find a value in a dictionary matching any alias (case-insensitive)."""
-    norm_map = {str(k).strip().lower(): v for k, v in record.items()}
+    """Find a value in a dictionary matching any alias (case-insensitive and punctuation-tolerant)."""
+    if not record:
+        return ""
+    norm_map = {}
+    clean_map = {}
+    for k, v in record.items():
+        if v is None or pd.isna(v) or not str(v).strip():
+            continue
+        raw_key = str(k).strip().lower()
+        cleaned_key = " ".join(re.sub(r"[^a-z0-9ğüşıöçâ\s]", " ", raw_key).split())
+        norm_map[raw_key] = str(v).strip()
+        clean_map[cleaned_key] = str(v).strip()
+
     for alias in aliases:
-        if alias in norm_map and norm_map[alias]:
-            return str(norm_map[alias]).strip()
+        norm_alias = alias.strip().lower()
+        clean_alias = " ".join(re.sub(r"[^a-z0-9ğüşıöçâ\s]", " ", norm_alias).split())
+        if norm_alias in norm_map:
+            return norm_map[norm_alias]
+        if clean_alias in clean_map:
+            return clean_map[clean_alias]
+
     return ""
+
+
+def _extract_hr_notes_and_reasons(record: dict[str, Any]) -> str:
+    """Extract and combine HR rejection reasons, withdrawal notes, and feedback."""
+    if not record:
+        return ""
+
+    reason_parts: list[str] = []
+    seen: set[str] = set()
+
+    def add_val(prefix: str, val: Any):
+        if val is None or pd.isna(val):
+            return
+        v_str = str(val).strip()
+        if not v_str or v_str.lower() in ("nan", "none", "-", ""):
+            return
+        entry = f"{prefix}: {v_str}" if prefix else v_str
+        if entry.lower() not in seen:
+            seen.add(entry.lower())
+            reason_parts.append(entry)
+
+    # 1. Primary Rejection / Withdraw reason columns
+    rejection_aliases = [
+        "rejection/withdraw reasons",
+        "rejection / withdraw reason",
+        "rejection/withdraw reason",
+        "rejection reasons",
+        "rejection reason",
+        "withdraw reasons",
+        "withdraw reason",
+        "rejection",
+        "withdraw",
+        "ret sebebi",
+        "red sebebi",
+        "ret nedeni",
+        "red nedeni",
+        "eleme nedeni",
+        "eleme sebebi",
+        "vazgecme nedeni",
+        "vazgeçme nedeni",
+    ]
+
+    for k, v in record.items():
+        norm_k = str(k).strip().lower()
+        clean_k = " ".join(re.sub(r"[^a-z0-9ğüşıöçâ\s]", " ", norm_k).split())
+        for alias in rejection_aliases:
+            if alias in norm_k or alias in clean_k:
+                add_val("", v)
+                break
+
+    # 2. Category feedback (e.g. Category after phone interview, Category after business interview)
+    for k, v in record.items():
+        norm_k = str(k).strip().lower()
+        if "category after" in norm_k or "mulakat sonrasi" in norm_k or "mülakat sonrası" in norm_k:
+            add_val(k.strip(), v)
+
+    # 3. If still empty, check generic notes / feedback / review
+    if not reason_parts:
+        generic_val = _find_field(
+            record,
+            ["notes", "note", "not", "notlar", "review", "feedback", "yorum", "görüş", "değerlendirme", "reason"],
+        )
+        if generic_val:
+            add_val("", generic_val)
+
+    return " | ".join(reason_parts)
 
 
 def determine_alignment(hr_status: str, hr_notes: str, ai_rec: str) -> str:
@@ -88,7 +170,7 @@ def determine_alignment(hr_status: str, hr_notes: str, ai_rec: str) -> str:
 
     is_hr_negative = bool(
         re.search(
-            r"\b(reject|rejected|red|elendi|olumsuz|passed|not suitable|unsuitable|dropped|failed|declined)\b",
+            r"\b(reject|rejected|red|ret|elendi|olumsuz|passed|not suitable|unsuitable|dropped|failed|declined|withdraw|withdrew|withdrawn|vazgecti|vazgeçti|salary|expectation|not interested)\b",
             combined_hr,
         )
     )
@@ -290,18 +372,15 @@ class ContactedCandidateEvaluator:
 
             # Determine best candidate name
             name = (
-                _find_field(recruiter_row, ["candidate name", "candidate_name", "full name", "ad soyad", "name"])
+                _find_field(recruiter_row, ["candidate name", "candidate_name", "candidate", "full name", "fullname", "ad soyad", "name", "isim"])
                 or cand.get("name")
                 or contacted_match.get("matched_key")
                 or cand.get("title", "")
             )
 
-            hr_status = _find_field(recruiter_row, ["status", "durum", "aşama", "stage", "sonuç"])
-            hr_notes = _find_field(
-                recruiter_row,
-                ["notes", "note", "not", "notlar", "review", "feedback", "yorum", "görüş", "değerlendirme", "reason"],
-            )
-            hr_recruiter = _find_field(recruiter_row, ["recruiter", "ik", "sorumlu", "ekleyen", "assigned"])
+            hr_status = _find_field(recruiter_row, ["stage", "status", "durum", "aşama", "asama", "sonuç", "sonuc"])
+            hr_notes = _extract_hr_notes_and_reasons(recruiter_row)
+            hr_recruiter = _find_field(recruiter_row, ["interviewer name", "interviewer", "recruiter", "ik", "sorumlu", "ekleyen", "assigned"])
 
             ai_review = cand.get("ai_review") or {}
             ai_recommendation = ai_review.get("recommendation", "UNREVIEWED")

@@ -318,3 +318,48 @@ class TestSearchHitsIsolation:
         assert len(hits) == 1
         assert hits[0]["url"] == "https://linkedin.com/in/yigitcan"
         assert hits[0]["contacted_match"]["recruiter_record"]["Status"] == "Interviewed"
+
+    def test_rejection_reason_columns_and_alignment(self, tmp_path: Path):
+        from contacted_evaluator import _extract_hr_notes_and_reasons, determine_alignment
+
+        record = {
+            "Candidate Name ": "Ahmet Yılmaz",
+            "Stage": "Phone Interviewed",
+            "Interviewer Name": "Burçak Ürüt",
+            "Rejection/Withdraw Reasons": "Salary expectation too high",
+            "Rejection / Withdraw Reason": "Candidate withdrew",
+        }
+
+        notes = _extract_hr_notes_and_reasons(record)
+        assert "Salary expectation too high" in notes
+        assert "Candidate withdrew" in notes
+
+        alignment = determine_alignment(record["Stage"], notes, "REJECT")
+        assert alignment == "Aligned (Both Rejected)"
+
+        alignment_discrepancy = determine_alignment(record["Stage"], notes, "ACCEPT")
+        assert alignment_discrepancy == "Discrepancy (HR Rejected vs AI Accepted)"
+
+    def test_tracker_spreadsheet_columns_matching(self, tmp_path: Path):
+        excel_path = tmp_path / "tracker.xlsx"
+        df = pd.DataFrame([{
+            "Candidate Name ": "Zeynep Demir",
+            "Stage": "Offer Rejected",
+            "Interviewer Name": "Canan Ak",
+            "Rejection/Withdraw Reasons": "Declined offer due to remote policy",
+            "Rejection / Withdraw Reason": None,
+        }])
+        with pd.ExcelWriter(excel_path, engine="openpyxl") as writer:
+            df.to_excel(writer, sheet_name="Candidate Tracker", index=False)
+
+        store = ContactedCandidatesStore(excel_path)
+        assert not store.is_empty()
+        assert "zeynep demir" in store.contacted_names
+
+        cand = {"title": "Zeynep Demir - Backend Developer | LinkedIn", "url": "https://linkedin.com/in/zeynepdemir"}
+        match = store.get_contacted_match(cand)
+        assert match is not None
+        assert match["matched_key"] == "zeynep demir"
+        rec = match["recruiter_record"]
+        assert rec["Stage"] == "Offer Rejected"
+        assert "remote policy" in rec["Rejection/Withdraw Reasons"]

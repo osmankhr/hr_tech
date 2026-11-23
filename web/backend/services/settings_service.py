@@ -421,6 +421,14 @@ def save_global_contacted_file(file_obj, filename: str, current_user=None) -> di
     try:
         conn = get_connection()
         u_id, u_email, u_name = _extract_user_audit_info(current_user)
+        valid_u_id = None
+        if u_id:
+            try:
+                user_row = conn.execute("SELECT id FROM users WHERE id = ?", (u_id,)).fetchone()
+                if user_row:
+                    valid_u_id = user_row["id"]
+            except Exception:
+                pass
         now_iso = utc_now()
         details = (
             f"{'Replaced list with' if action == 'replace' else 'Uploaded'} '{raw_name}'. "
@@ -434,7 +442,7 @@ def save_global_contacted_file(file_obj, filename: str, current_user=None) -> di
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             action, raw_name, size, len(store.contacted_names), len(store.contacted_urls),
-            u_id, u_email, u_name, details, now_iso
+            valid_u_id, u_email, u_name, details, now_iso
         ))
         conn.commit()
         conn.close()
@@ -470,6 +478,14 @@ def delete_global_contacted_file(current_user=None) -> dict:
         try:
             conn = get_connection()
             u_id, u_email, u_name = _extract_user_audit_info(current_user)
+            valid_u_id = None
+            if u_id:
+                try:
+                    user_row = conn.execute("SELECT id FROM users WHERE id = ?", (u_id,)).fetchone()
+                    if user_row:
+                        valid_u_id = user_row["id"]
+                except Exception:
+                    pass
             now_iso = utc_now()
             conn.execute("""
                 INSERT INTO contacted_candidates_logs (
@@ -479,7 +495,7 @@ def delete_global_contacted_file(current_user=None) -> dict:
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 "delete", deleted_filename, 0, 0, 0,
-                u_id, u_email, u_name, f"Contacted list '{deleted_filename}' removed.", now_iso
+                valid_u_id, u_email, u_name, f"Contacted list '{deleted_filename}' removed.", now_iso
             ))
             conn.commit()
             conn.close()

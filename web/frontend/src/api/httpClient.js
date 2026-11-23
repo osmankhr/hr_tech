@@ -20,11 +20,25 @@ async function request(path, options = {}) {
   if (!response.ok) {
     let message = "Request failed";
 
-    try {
-      const errorBody = await response.json();
-      message = errorBody.detail || errorBody.message || message;
-    } catch {
-      message = response.statusText || message;
+    if (response.status === 413) {
+      message = "File exceeds the maximum upload size limit allowed by the server.";
+    } else if (response.status === 401) {
+      message = "Session expired or not authenticated. Please log in again.";
+    } else {
+      try {
+        const errorBody = await response.json();
+        if (typeof errorBody.detail === "string" && errorBody.detail) {
+          message = errorBody.detail;
+        } else if (Array.isArray(errorBody.detail) && errorBody.detail.length > 0) {
+          message = errorBody.detail.map((d) => d.msg || JSON.stringify(d)).join("; ");
+        } else if (errorBody.message) {
+          message = errorBody.message;
+        } else if (response.statusText) {
+          message = response.statusText;
+        }
+      } catch {
+        message = response.statusText || `Request failed with status ${response.status}`;
+      }
     }
 
     throw new Error(message);

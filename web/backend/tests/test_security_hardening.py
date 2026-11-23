@@ -25,7 +25,47 @@ def reset_rate_limiters():
 
 
 @pytest.fixture
-def client():
+def client(tmp_path, monkeypatch):
+    test_db = tmp_path / "test.db"
+    import main
+    monkeypatch.setattr(main, "DB_PATH", test_db)
+    monkeypatch.setattr(core.config, "DB_PATH", test_db)
+    from core.database import get_connection
+    from auth_utils import hash_password, utc_now
+    conn = get_connection()
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            email TEXT NOT NULL UNIQUE,
+            full_name TEXT NOT NULL,
+            role TEXT NOT NULL CHECK(role IN ('admin', 'hr')) DEFAULT 'hr',
+            password_hash TEXT NOT NULL,
+            password_salt TEXT NOT NULL,
+            password_algorithm TEXT NOT NULL DEFAULT 'pbkdf2_hmac_sha256',
+            password_iterations INTEGER NOT NULL DEFAULT 600000,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS auth_tokens (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            token_hash TEXT NOT NULL UNIQUE,
+            created_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            revoked_at TEXT,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+    """)
+    now = utc_now()
+    pwd_hash, salt = hash_password("admin123")
+    conn.execute("""
+        INSERT INTO users (
+            email, full_name, role, password_hash, password_salt, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, ("admin@hr.local", "Admin User", "admin", pwd_hash, salt, now, now))
+    conn.commit()
+    conn.close()
     return TestClient(app)
 
 

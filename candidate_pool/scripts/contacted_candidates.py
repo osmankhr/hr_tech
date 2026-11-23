@@ -52,30 +52,49 @@ NAME_COLUMN_ALIASES = [
     "candidatename",
     "candidate",
     "candidates",
-    "full name",
-    "fullname",
-    "name",
-    "person name",
+    "candidate full name",
+    "applicant",
+    "applicant name",
     "talent",
     "talent name",
     "contact",
     "contact name",
+    "person",
+    "person name",
+    "full name",
+    "fullname",
+    "name",
     "ad soyad",
     "ad_soyad",
     "ad soyadi",
     "adi soyadi",
     "ad ve soyad",
     "adi ve soyadi",
+    "ad / soyad",
+    "ad - soyad",
+    "ad / soyadi",
     "aday adi",
     "aday adı",
+    "aday ad soyad",
+    "aday adi soyad",
     "aday adi soyadi",
     "aday adı soyadı",
+    "adayin adi",
+    "adayın adı",
+    "adayin adi soyadi",
+    "adayın adı soyadı",
     "aday",
     "adaylar",
     "isim",
     "isim soyad",
     "isim soyisim",
     "isim ve soyisim",
+    "aday ismi",
+    "aday bilgisi",
+    "gorusulen aday",
+    "görüşülen aday",
+    "gorusulen kisi",
+    "görüşülen kişi",
 ]
 
 FIRST_NAME_ALIASES = [
@@ -111,11 +130,14 @@ URL_COLUMN_ALIASES = [
     "linkedin url",
     "linkedin profili",
     "linkedin profile",
+    "linkedin link",
+    "linkedin linki",
     "github",
     "github_url",
     "github url",
     "github profili",
     "github profile",
+    "github link",
     "huggingface",
     "huggingface_url",
     "huggingface url",
@@ -126,6 +148,8 @@ URL_COLUMN_ALIASES = [
     "kaggle profili",
     "profile_url",
     "profile url",
+    "profile link",
+    "profile linki",
     "profile",
     "profiles",
     "profil",
@@ -133,6 +157,8 @@ URL_COLUMN_ALIASES = [
     "profil url",
     "profil linki",
     "profil_linki",
+    "profil baglantisi",
+    "profil bağlantısı",
     "cv",
     "cv_link",
     "cv link",
@@ -140,6 +166,99 @@ URL_COLUMN_ALIASES = [
     "özgeçmiş",
     "özgeçmiş linki",
 ]
+
+
+def clean_header_text(val: Any) -> str:
+    """Strip punctuation and normalize header names for resilient comparison."""
+    if val is None:
+        return ""
+    norm = normalize_turkish_text(str(val)).strip()
+    cleaned = re.sub(r"[^a-z0-9ğüşıöçâ\s]", " ", norm)
+    return " ".join(cleaned.split())
+
+
+def is_candidate_name_header(val: Any) -> bool:
+    """Resiliently identify if a column represents a candidate's full name."""
+    cleaned = clean_header_text(val)
+    if not cleaned or len(cleaned) > 60:
+        return False
+    tokens = set(cleaned.split())
+    # Guard against non-candidate names (interviewer, company, school)
+    disallowed = {
+        "interviewer",
+        "mulakatci",
+        "mülakatçı",
+        "recruiter",
+        "firm",
+        "sirket",
+        "şirket",
+        "company",
+        "school",
+        "okul",
+        "customer",
+        "client",
+        "pozisyon",
+        "position",
+        "role",
+    }
+    if any(d in tokens for d in disallowed):
+        return False
+    if cleaned in NAME_COLUMN_ALIASES or normalize_turkish_text(str(val)).strip() in NAME_COLUMN_ALIASES:
+        return True
+    if {"candidate", "name"}.issubset(tokens):
+        return True
+    if {"full", "name"}.issubset(tokens):
+        return True
+    if {"ad", "soyad"}.issubset(tokens) or {"adi", "soyadi"}.issubset(tokens) or {"ad", "soyisim"}.issubset(tokens):
+        return True
+    if {"aday", "ad"}.issubset(tokens) or {"aday", "adi"}.issubset(tokens) or {"aday", "soyad"}.issubset(tokens) or {"aday", "soyadi"}.issubset(tokens):
+        return True
+    if {"isim", "soyad"}.issubset(tokens) or {"isim", "soyisim"}.issubset(tokens):
+        return True
+    return False
+
+
+def is_first_name_header(val: Any) -> bool:
+    """Identify if a column represents a candidate's first name."""
+    cleaned = clean_header_text(val)
+    if not cleaned or len(cleaned) > 30:
+        return False
+    tokens = set(cleaned.split())
+    disallowed = {"interviewer", "recruiter", "company", "firm", "school"}
+    if any(d in tokens for d in disallowed):
+        return False
+    return cleaned in FIRST_NAME_ALIASES or {"first", "name"}.issubset(tokens) or cleaned in ("ad", "adi", "adı", "isim")
+
+
+def is_last_name_header(val: Any) -> bool:
+    """Identify if a column represents a candidate's last name / surname."""
+    cleaned = clean_header_text(val)
+    if not cleaned or len(cleaned) > 30:
+        return False
+    tokens = set(cleaned.split())
+    disallowed = {"interviewer", "recruiter", "company", "firm", "school"}
+    if any(d in tokens for d in disallowed):
+        return False
+    return cleaned in LAST_NAME_ALIASES or {"last", "name"}.issubset(tokens) or cleaned in ("soyad", "soyadi", "soyadı", "soyisim")
+
+
+def is_url_header(val: Any) -> bool:
+    """Identify if a column represents a candidate profile URL or link."""
+    cleaned = clean_header_text(val)
+    if not cleaned or len(cleaned) > 60:
+        return False
+    if cleaned in URL_COLUMN_ALIASES or normalize_turkish_text(str(val)).strip() in URL_COLUMN_ALIASES:
+        return True
+    tokens = set(cleaned.split())
+    if "linkedin" in tokens or "github" in tokens or "kaggle" in tokens or "huggingface" in tokens:
+        return True
+    if "profile" in tokens and ("url" in tokens or "link" in tokens):
+        return True
+    if "profil" in tokens and ("url" in tokens or "link" in tokens or "linki" in tokens or "baglanti" in tokens or "bağlantı" in tokens):
+        return True
+    if "cv" in tokens and ("url" in tokens or "link" in tokens):
+        return True
+    return False
 
 # Turkish to Latin character transliteration map
 _TURKISH_CHAR_MAP = str.maketrans(
@@ -253,13 +372,23 @@ class ContactedCandidatesStore:
             if suffix in (".xlsx", ".xls"):
                 excel_file = pd.ExcelFile(file_path)
                 for sheet_name in excel_file.sheet_names:
-                    df = excel_file.parse(sheet_name)
+                    try:
+                        df = excel_file.parse(sheet_name)
+                        if not df.empty:
+                            dfs.append(df)
+                    except Exception as sheet_err:
+                        logger.warning("Could not parse sheet %s in %s: %s", sheet_name, file_path.name, sheet_err)
+            elif suffix == ".csv":
+                try:
+                    df = pd.read_csv(file_path)
+                    # If single column with semicolon or tab headers, re-read with detected delimiter
+                    if len(df.columns) == 1 and any(delim in str(df.columns[0]) for delim in (";", "\t")):
+                        delim = ";" if ";" in str(df.columns[0]) else "\t"
+                        df = pd.read_csv(file_path, sep=delim)
                     if not df.empty:
                         dfs.append(df)
-            elif suffix == ".csv":
-                df = pd.read_csv(file_path)
-                if not df.empty:
-                    dfs.append(df)
+                except Exception as csv_err:
+                    logger.warning("Failed to parse CSV %s: %s", file_path.name, csv_err)
             else:
                 logger.warning("Unsupported contacted candidates file extension: %s", suffix)
                 return
@@ -283,14 +412,11 @@ class ContactedCandidatesStore:
             return df
 
         def is_header_name(val):
-            norm = normalize_turkish_text(str(val)).strip()
-            if not norm or len(norm) > 35:
-                return False
             return (
-                norm in NAME_COLUMN_ALIASES
-                or norm in URL_COLUMN_ALIASES
-                or norm in FIRST_NAME_ALIASES
-                or norm in LAST_NAME_ALIASES
+                is_candidate_name_header(val)
+                or is_url_header(val)
+                or is_first_name_header(val)
+                or is_last_name_header(val)
             )
 
         def has_recognized_col(cols):
@@ -299,7 +425,7 @@ class ContactedCandidatesStore:
         if has_recognized_col(df.columns):
             return df
 
-        for idx in range(min(5, len(df))):
+        for idx in range(min(15, len(df))):
             row_vals = df.iloc[idx].tolist()
             if has_recognized_col(row_vals):
                 new_header = [str(v).strip() for v in row_vals]
@@ -312,55 +438,91 @@ class ContactedCandidatesStore:
     def _extract_from_df(self, df: pd.DataFrame) -> None:
         df = self._promote_header_if_needed(df)
 
-        # Normalize column header names: both raw lower and Turkish normalized
+        # Normalize column header names: raw lower, Turkish normalized, and clean punctuation-stripped
         col_map = {}
+        col_clean_map = {}
         for col in df.columns:
             raw_key = str(col).strip().lower()
-            norm_key = normalize_turkish_text(str(col))
+            norm_key = normalize_turkish_text(str(col)).strip()
+            clean_key = clean_header_text(col)
             col_map[raw_key] = col
             col_map[norm_key] = col
+            col_clean_map[clean_key] = col
 
         # Look for candidate name column
         name_col = None
-        for alias in NAME_COLUMN_ALIASES:
-            norm_alias = normalize_turkish_text(alias)
-            if alias in col_map:
-                name_col = col_map[alias]
+        for col in df.columns:
+            if is_candidate_name_header(col):
+                name_col = col
                 break
-            if norm_alias in col_map:
-                name_col = col_map[norm_alias]
-                break
+
+        if name_col is None:
+            for alias in NAME_COLUMN_ALIASES:
+                norm_alias = normalize_turkish_text(alias).strip()
+                clean_alias = clean_header_text(alias)
+                if alias in col_map:
+                    name_col = col_map[alias]
+                    break
+                if norm_alias in col_map:
+                    name_col = col_map[norm_alias]
+                    break
+                if clean_alias in col_clean_map:
+                    name_col = col_clean_map[clean_alias]
+                    break
 
         # Look for split first name and last name columns
         first_col = None
         last_col = None
         if name_col is None:
-            for alias in FIRST_NAME_ALIASES:
-                norm_alias = normalize_turkish_text(alias)
-                if alias in col_map:
-                    first_col = col_map[alias]
-                    break
-                if norm_alias in col_map:
-                    first_col = col_map[norm_alias]
-                    break
+            for col in df.columns:
+                if is_first_name_header(col) and first_col is None:
+                    first_col = col
+                elif is_last_name_header(col) and last_col is None:
+                    last_col = col
 
-            for alias in LAST_NAME_ALIASES:
-                norm_alias = normalize_turkish_text(alias)
-                if alias in col_map:
-                    last_col = col_map[alias]
-                    break
-                if norm_alias in col_map:
-                    last_col = col_map[norm_alias]
-                    break
+            if first_col is None:
+                for alias in FIRST_NAME_ALIASES:
+                    norm_alias = normalize_turkish_text(alias).strip()
+                    clean_alias = clean_header_text(alias)
+                    if alias in col_map:
+                        first_col = col_map[alias]
+                        break
+                    if norm_alias in col_map:
+                        first_col = col_map[norm_alias]
+                        break
+                    if clean_alias in col_clean_map:
+                        first_col = col_clean_map[clean_alias]
+                        break
+
+            if last_col is None:
+                for alias in LAST_NAME_ALIASES:
+                    norm_alias = normalize_turkish_text(alias).strip()
+                    clean_alias = clean_header_text(alias)
+                    if alias in col_map:
+                        last_col = col_map[alias]
+                        break
+                    if norm_alias in col_map:
+                        last_col = col_map[norm_alias]
+                        break
+                    if clean_alias in col_clean_map:
+                        last_col = col_clean_map[clean_alias]
+                        break
 
         # Identify ALL URL columns
         url_cols = []
+        for col in df.columns:
+            if is_url_header(col):
+                url_cols.append(col)
+
         for alias in URL_COLUMN_ALIASES:
-            norm_alias = normalize_turkish_text(alias)
+            norm_alias = normalize_turkish_text(alias).strip()
+            clean_alias = clean_header_text(alias)
             if alias in col_map and col_map[alias] not in url_cols:
                 url_cols.append(col_map[alias])
             if norm_alias in col_map and col_map[norm_alias] not in url_cols:
                 url_cols.append(col_map[norm_alias])
+            if clean_alias in col_clean_map and col_clean_map[clean_alias] not in url_cols:
+                url_cols.append(col_clean_map[clean_alias])
 
         url_pattern = re.compile(
             r"(https?://[^\s\"'<>]+|linkedin\.com/[^\s\"'<>]+|github\.com/[^\s\"'<>]+|huggingface\.co/[^\s\"'<>]+|kaggle\.com/[^\s\"'<>]+)",

@@ -31,12 +31,34 @@ def client(tmp_path, monkeypatch):
     data_dir.mkdir(parents=True)
     analysis_dir = tmp_path / "analysis"
     analysis_dir.mkdir(parents=True)
+    test_db = tmp_path / "test.db"
 
     monkeypatch.setattr(core.config, "GLOBAL_CONTACTED_DIR", data_dir)
     monkeypatch.setattr(core.config, "GLOBAL_ANALYSIS_DIR", analysis_dir)
     monkeypatch.setattr(core.config, "COMPARISON_REPORT_XLSX", analysis_dir / "contacted_hr_vs_ai_comparison.xlsx")
     monkeypatch.setattr(core.config, "COMPARISON_REPORT_CSV", analysis_dir / "contacted_hr_vs_ai_comparison.csv")
+    monkeypatch.setattr(core.config, "DB_PATH", test_db)
     monkeypatch.delenv("CONTACTED_CANDIDATES_PATH", raising=False)
+
+    from core.database import get_connection, ensure_pipeline_tables
+    conn = get_connection()
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            email TEXT UNIQUE NOT NULL,
+            full_name TEXT NOT NULL,
+            role TEXT NOT NULL DEFAULT 'hr'
+        );
+        CREATE TABLE IF NOT EXISTS campaigns (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            campaign_code TEXT UNIQUE NOT NULL,
+            name TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'Active',
+            created_by_user_id INTEGER
+        );
+    """)
+    conn.close()
+    ensure_pipeline_tables()
 
     app.dependency_overrides[get_current_user] = _make_sqlite_user_row
     c = TestClient(app)
